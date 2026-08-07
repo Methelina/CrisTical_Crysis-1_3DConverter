@@ -21,7 +21,7 @@ Reads data from binary .chr/.dba/.mtl files using CryEngine format specification
 - **Textures** — auto-convert DDS (DXT1/DXT5/ATI2N/3DC/RGBA8/L8) → PNG
 - **DDN normals** — Z-channel reconstruction, DDNA gloss extraction by suffix
 - **Emission** — Diffuse alpha → emissiveTexture (emission power in Crysis)
-- **DDS-Unsplit** — combines split files (.dds.0/.1/...) into single DDS (mip-0)
+- **DDS-Unsplit** — combines split files (.dds.0/.1/...) into single DDS (mip-0) based on [DDS-Unsplitter](https://github.com/Markemp/DDS-Unsplitter) method 
 - **Materials** — PBR metallicRoughness + baseColorTexture + normalTexture from .mtl
 - **Multi-material** — per-attachment .mtl loading
 - **Split animations** — export each animation as a separate glTF
@@ -182,6 +182,6 @@ CrisTical_Crysis3DConverter/
 
 ## Acknowledgements
 
-- Khronos glTF 2.0 Specification
-- [BCnEncoder.NET](https://bcnencoder.net/) — BC decoding algorithms
+- [Khronos glTF 2.0 Specification](https://github.com/pygfx/gltflib)
+- [BCnEncoder.NET](https://github.com/Nominom/BCnEncoder.NET) — BC decoding algorithms
 - [DDS-Unsplitter](https://github.com/Markemp/DDS-Unsplitter) — reference split-DDS implementation
