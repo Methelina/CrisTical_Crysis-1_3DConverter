@@ -21,7 +21,7 @@
 - **Текстуры** — авто-конвертация DDS (DXT1/DXT5/ATI2N/3DC/RGBA8/L8) → PNG
 - **DDN-нормали** — реконструкция Z-канала, DDNA gloss-экстракция по суффиксу
 - **Emission** — альфа-канал Diffuse → emissiveTexture (emission power в Crysis)
-- **DDS-Unsplit** — сборка split-файлов (.dds.0/.1/...) в единый DDS (mip-0)
+- **DDS-Unsplit** — сборка split-файлов (.dds.0/.1/...) в единый DDS (mip-0), вдохновлен методом из [BCnEncoder.NET](https://github.com/Nominom/BCnEncoder.NET)
 - **Материалы** — PBR metallicRoughness + baseColorTexture + normalTexture из .mtl
 - **Мульти-материалы** — отдельные .mtl для каждого аттачмента
 - **Разделение анимаций** — экспорт каждой в отдельный glTF
@@ -182,6 +182,6 @@ CrisTical_Crysis3DConverter/
 
 ## Благодарности
 
-- Khronos glTF 2.0 Specification
-- [BCnEncoder.NET](https://bcnencoder.net/) — BC decoding algorithms
+- [Khronos glTF 2.0 Specification](https://github.com/pygfx/gltflib)
+- [BCnEncoder.NET](https://github.com/Nominom/BCnEncoder.NET) — BC decoding algorithms
 - [DDS-Unsplitter](https://github.com/Markemp/DDS-Unsplitter) — reference split-DDS implementation
