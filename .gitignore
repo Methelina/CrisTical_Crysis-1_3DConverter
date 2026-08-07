@@ -9,6 +9,7 @@ build/
 # Virtual environment (created by installer)
 cris_env/
 python_embeded/
+python_embeded
 
 # Native binaries (downloaded by installer)
 Bin/
