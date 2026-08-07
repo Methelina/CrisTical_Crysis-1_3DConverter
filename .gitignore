@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment (created by installer)
+cris_env/
+python_embeded/
+
+# Native binaries (downloaded by installer)
+Bin/
+uv.exe
+uvx.exe
+
+# Output and temp
+output/
+temp/
+scripts/_temp/
+
+# Cache
+.cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Screenshot working files
+docs/pintura_*.png
+
+# Archives
+*.zip
+*.7z
+*.tar.gz
+*.rar

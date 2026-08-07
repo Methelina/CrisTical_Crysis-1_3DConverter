@@ -1,1 +1,187 @@
-# CrisTical_Crysis-1_3DConverter
+# CrisTical Crysis3D Converter
+
+Converts Crysis 1 characters (original + Remaster) to glTF 2.0.
+Uses `.cdf` (Character Definition File) as the root assembly point,
+merging the main model with all attachments into a single output.
+
+Reads data from binary .chr/.dba/.mtl files using CryEngine format specifications. No third-party converters required.
+
+**Author:** Soror L.'.L.'. aka Methelina &nbsp;|&nbsp; **Version:** 2.1 &nbsp;|&nbsp; **License:** Apache 2.0
+
+![Interface](docs/001_interface.png)
+
+---
+
+## Features
+
+- **CDF assembly** — auto-merge Model + CA_SKIN Attachments into one glTF
+- **Skeleton** — full bone hierarchy with correct inverse-bind matrices
+- **Mesh** — all primitives with POSITION/NORMAL/UV/JOINTS/WEIGHTS
+- **Animations** — supports DBA v0903 (original) and v0905 (Remaster)
+- **Textures** — auto-convert DDS (DXT1/DXT5/ATI2N/3DC/RGBA8/L8) → PNG
+- **DDN normals** — Z-channel reconstruction, DDNA gloss extraction by suffix
+- **Emission** — Diffuse alpha → emissiveTexture (emission power in Crysis)
+- **DDS-Unsplit** — combines split files (.dds.0/.1/...) into single DDS (mip-0)
+- **Materials** — PBR metallicRoughness + baseColorTexture + normalTexture from .mtl
+- **Multi-material** — per-attachment .mtl loading
+- **Split animations** — export each animation as a separate glTF
+- **GLB export** — single binary file output option
+- **Quaternion fix** — eliminates bone-twisting artifacts
+- **GUI + CLI** — graphical control panel and full command-line mode
+- **Auto-detect game root** — GUI finds game directory by walking up from .cdf
+- **Universal** — works with any Crysis 1 character or object
+
+---
+
+## Quick Start
+
+### Installation
+
+Run `Install_CrisTical.bat` once to download and set up:
+
+- Python 3.11 with required libraries (pyassimp, numpy, pillow, bpy, dearpygui, trimesh, pygltflib) for 3D format processing
+- Assimp 6.0.5 (assimp.dll)
+- 7-Zip (7za.exe) — for .dba extraction from Animations.pak
+
+Everything is portable within the project folder. Internet required only during installation.
+
+### Launch GUI
+
+```batch
+Run_CrisTical.bat
+```
+
+Opens the control panel: select .cdf → auto-scan model → configure animations/textures → convert. All actions are logged.
+
+### CLI Mode
+
+```batch
+Run_CrisTical.bat --cdf alien.cdf --gamedir "F:\Games\Crysis\Game" --out output
+Run_CrisTical.bat --cdf alien.cdf --gamedir "F:\Games\Crysis\Game" --split-anim --glb
+```
+
+---
+
+## Interface
+
+![Output](docs/002_output.png)
+
+The control panel shows:
+
+- **CDF Status** — Valid (v0905) / Valid (v0903) / Invalid — animation controller version
+- **Game Dir Status** — green (valid) / yellow (no markers) / red (not found)
+- **Model Scan** — Bones, Primitives, Attachments, Materials, Animations
+- **Auto-detection** — GUI walks up from .cdf to find game root automatically
+- **CLI Preview** — shows the equivalent command-line command
+
+---
+
+## Why Game Folders (`--gamedir`) Are Needed
+
+The converter searches for three types of data in the specified folders:
+
+1. **Textures** — `.dds`/`.png` files matching paths in `.mtl`. Searched in `--gamedir` order.
+2. **Animations** — `.dba` file from `.cal` (`$TracksDatabase`). Also searched in `--gamedir`.
+3. **Materials** — `.mtl` file next to `.cdf` or in game folders.
+
+### How to Choose Folders
+
+Recommended order: **Remaster → original → unpacked content**.
+
+```batch
+# Remaster only (PNG textures, v0905 animations)
+--gamedir "F:\Games\Crysis_Remastered\Game"
+
+# Remaster + original (for legacy .mtl/textures missing in Remaster)
+--gamedir "F:\Games\Crysis_Remastered\Game" --gamedir "F:\Games\Crysis\Game"
+
+# + unpacked content (split-DDS textures from .pak)
+--gamedir "F:\Games\Crysis_Remastered\Game" --gamedir "F:\Games\Crysis\Game" --gamedir "F:\Games\Crysis_Remastered\__CONTENT\objectsch.pak_Unpacked"
+```
+
+**Rule:** put the folder with best-quality textures first (Remaster = 4K PNG). Others are fallbacks for missing files.
+
+---
+
+## CLI Flags
+
+| Flag | Description |
+|------|-------------|
+| `--cdf <path>` | Path to `.cdf` or `.chr` file |
+| `--gamedir <dir>` | Game root folder (repeatable; order = priority) |
+| `--out <path>` | Output directory (default: `output/`) |
+| `--no-anim` | Skip animation injection |
+| `--no-tex` | Skip texture conversion |
+| `--split-anim` | Export each animation as a separate glTF |
+| `--glb` | Output as binary `.glb` instead of `.gltf`+`.bin` |
+| `--help` | Show help |
+
+---
+
+## Output
+
+All files are written to the output directory:
+
+```
+output/
+├── model_name.gltf        # glTF 2.0 scene (or .glb with --glb flag)
+├── model_name.bin         # Binary buffer (not present with --glb)
+├── model_name.log         # Conversion log
+├── material_diffuse.png   # Diffuse texture
+├── material_normal.png    # Normal map (Z-channel reconstructed)
+├── material_emiss.png     # Emission map (extracted from Diffuse alpha)
+├── material_specular.png  # Specular map
+└── material_gloss.png     # Gloss map (DDNA alpha)
+```
+
+With `--split-anim`, each animation is placed in a `model_name_anims/` subdirectory.
+
+---
+
+## Formats
+
+| File | Format | Versions |
+|------|--------|----------|
+| .cdf | Character Definition (XML) | CryEngine 1–3 |
+| .chr | CryTek chunk file | v0744, v0745 |
+| .dba | CryAnimation Database | v0903, v0905 |
+| .mtl | XML material | single/multi-material |
+| .dds | DirectDraw Surface (split/combined) | DXT1, DXT5, ATI2N/3DC, RGBA8, L8 |
+| .cal | Character Animation List | plain text |
+
+---
+
+## Project Structure
+
+```
+CrisTical_Crysis3DConverter/
+├── Install_CrisTical.bat          # Environment installer
+├── Run_CrisTical.bat              # Launcher (GUI / CLI)
+├── README.md / README.ru.md       # Documentation
+├── scripts/
+│   ├── cristical_gui.py          # Control panel (DearPyGui)
+│   ├── cdf2gltf.py               # Conversion orchestrator
+│   └── cristical_core/           # Converter library
+│       ├── crychr.py              # .chr/.cdf parser (CompiledBones, DataStream, CDF XML)
+│       ├── crygltf.py             # glTF 2.0 writer (skeleton + mesh + IBM + materials)
+│       ├── crydba.py              # DBA v0903/v0905 parser (SmallTree64, Bitset, TCB)
+│       ├── gltf_anim.py           # Animation injector + quaternion hemisphere fix
+│       ├── tex_convert.py         # Texture converter (MTL→PNG, DDS→PNG, DDN Z, DDS unsplit)
+│       ├── inject_anim.py         # CLI: animation injection
+│       └── convert_chr.py         # CLI: skeleton + mesh
+├── resources/
+│   └── ModeSevenBETAVHS.ttf      # Interface font
+├── docs/                          # Screenshots
+├── Bin/                           # Native tools (installer)
+├── cris_env/                      # Python venv (installer)
+├── output/                        # Output folder
+└── temp/                          # Temporary files
+```
+
+---
+
+## Acknowledgements
+
+- Khronos glTF 2.0 Specification
+- [BCnEncoder.NET](https://bcnencoder.net/) — BC decoding algorithms
+- [DDS-Unsplitter](https://github.com/Markemp/DDS-Unsplitter) — reference split-DDS implementation
