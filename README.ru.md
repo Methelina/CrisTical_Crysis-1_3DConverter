@@ -8,7 +8,7 @@
 
 **Автор:** Soror L.'.L.'. aka Methelina &nbsp;|&nbsp; **Версия:** 2.1 &nbsp;|&nbsp; **Лицензия:** Apache 2.0
 
-![Результат](docs/002_output.png)
+![Output](docs/action_motor.gif)
 
 ---
 
@@ -133,6 +133,8 @@ output/
 ├── material_specular.png  # Specular-карта
 └── material_gloss.png     # Gloss-карта (DDNA alpha)
 ```
+
+![Результат](docs/002_output.png)
 
 С флагом `--split-anim` каждая анимация помещается в подпапку `model_name_anims/`.
 
