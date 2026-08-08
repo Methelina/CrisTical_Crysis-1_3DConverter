@@ -8,7 +8,7 @@ Reads data from binary .chr/.dba/.mtl files using CryEngine format specification
 
 **Author:** Soror L.'.L.'. aka Methelina &nbsp;|&nbsp; **Version:** 2.1 &nbsp;|&nbsp; **License:** Apache 2.0
 
-![Interface](docs/001_interface.png)
+![Output](docs/action_motor.gif)
 
 ---
 
@@ -64,7 +64,7 @@ Run_CrisTical.bat --cdf alien.cdf --gamedir "F:\Games\Crysis\Game" --split-anim 
 
 ## Interface
 
-![Output](docs/002_output.png)
+![Interface](docs/001_interface.png)
 
 The control panel shows:
 
@@ -100,6 +100,8 @@ Recommended order: **Remaster → original → unpacked content**.
 ```
 
 **Rule:** put the folder with best-quality textures first (Remaster = 4K PNG). Others are fallbacks for missing files.
+
+![Output](docs/002_output.png)
 
 ---
 
