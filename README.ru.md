@@ -1,14 +1,14 @@
 # CrisTical Crysis3D Converter
 
-Конвертер персонажей Crysis 1 (оригинал + Remaster) в glTF 2.0.
+Конвертер анимированных персонажей Crysis 1 (оригинал + Remaster) в glTF 2.0.
 Работает на основе `.cdf` (Character Definition File) — корневого файла сборки
-персонажа, который объединяет основную модель и все аттачменты.
+персонажа, который объединяет основную модель, все аттачменты и анимации со скелетом.
 
 Извлекает данные из бинарных .chr/.dba/.mtl файлов. Не зависит от сторонних конвертеров.
 
 **Автор:** Soror L.'.L.'. aka Methelina &nbsp;|&nbsp; **Версия:** 2.1 &nbsp;|&nbsp; **Лицензия:** Apache 2.0
 
-![Интерфейс](docs/001_interface.png)
+![Результат](docs/002_output.png)
 
 ---
 
@@ -21,7 +21,7 @@
 - **Текстуры** — авто-конвертация DDS (DXT1/DXT5/ATI2N/3DC/RGBA8/L8) → PNG
 - **DDN-нормали** — реконструкция Z-канала, DDNA gloss-экстракция по суффиксу
 - **Emission** — альфа-канал Diffuse → emissiveTexture (emission power в Crysis)
-- **DDS-Unsplit** — сборка split-файлов (.dds.0/.1/...) в единый DDS (mip-0)
+- **DDS-Unsplit** — сборка split-файлов (.dds.0/.1/...) в единый DDS (mip-0), вдохновлен методом из [DDS-Unsplitter](https://github.com/Markemp/DDS-Unsplitter)
 - **Материалы** — PBR metallicRoughness + baseColorTexture + normalTexture из .mtl
 - **Мульти-материалы** — отдельные .mtl для каждого аттачмента
 - **Разделение анимаций** — экспорт каждой в отдельный glTF
@@ -64,7 +64,7 @@ Run_CrisTical.bat --cdf alien.cdf --gamedir "F:\Games\Crysis\Game" --split-anim 
 
 ## Интерфейс
 
-![Результат](docs/002_output.png)
+![Интерфейс](docs/001_interface.png)
 
 Панель управления показывает:
 
@@ -182,6 +182,6 @@ CrisTical_Crysis3DConverter/
 
 ## Благодарности
 
-- Khronos glTF 2.0 Specification
-- [BCnEncoder.NET](https://bcnencoder.net/) — BC decoding algorithms
+- [Khronos glTF 2.0 Specification](https://github.com/pygfx/gltflib)
+- [BCnEncoder.NET](https://github.com/Nominom/BCnEncoder.NET) — BC decoding algorithms
 - [DDS-Unsplitter](https://github.com/Markemp/DDS-Unsplitter) — reference split-DDS implementation
