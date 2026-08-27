@@ -38,6 +38,9 @@ Thumbs.db
 # Screenshot working files
 docs/pintura_*.png
 
+# Internal docs
+docs/exporter_roadmap.md
+
 # Archives
 *.zip
 *.7z
