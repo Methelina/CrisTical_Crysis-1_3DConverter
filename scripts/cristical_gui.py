@@ -22,7 +22,9 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from cdf2gltf import run_pipeline, read_chr_or_cdf, parse_cal, resolve_dba
 from cdf2gltf import _resolve_mtl as _cdf_resolve_mtl
-from cristical_core import read_cdf, read_dba_version
+from cgf2gltf import run_pipeline as run_cgf_pipeline
+from cgf2gltf import _resolve_mtl as _cgf_resolve_mtl
+from cristical_core import read_cdf, read_dba_version, read_cgf, read_cgf_meshes
 import dearpygui.dearpygui as dpg
 
 SC = "status_circle"
@@ -65,37 +67,75 @@ for d in (OUTPUT_DEFAULT, PROJ_ROOT / "temp"):
 #  File pickers (tkinter first, DPG fallback)
 # ===================================================================
 
-def _tk_pick_file(title, filetypes, initialdir=None):
+def _bundled_tcl_dir():
+    """Locate a bundled Tcl/Tk script library (e.g. python_embeded/tcl).
+
+    The project ships with an embedded Python whose tkinter has no
+    usable init.tcl on the default search path. Returns the directory
+    containing tcl8.6/ and tk8.6/ subfolders, or None.
+    """
+    for base in (PROJ_ROOT, SCRIPT_DIR, SCRIPT_DIR.parent):
+        tcl = base / "python_embeded" / "tcl"
+        if (tcl / "tcl8.6" / "init.tcl").is_file() and (tcl / "tk8.6" / "tk.tcl").is_file():
+            return tcl
+    return None
+
+
+def _make_tk_root():
+    """Create a Tk root, repairing Tcl library paths for embedded Python."""
+    import tkinter as tk
     try:
-        import tkinter as tk
-        from tkinter import filedialog
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes('-topmost', True)
+        return tk.Tk()
+    except tk.TclError:
+        tcl = _bundled_tcl_dir()
+        if tcl is None:
+            raise
+        os.environ["TCL_LIBRARY"] = str(tcl / "tcl8.6")
+        os.environ["TK_LIBRARY"] = str(tcl / "tk8.6")
+        return tk.Tk()
+
+
+def _tk_pick_file(title, filetypes, initialdir=None):
+    """Tkinter file-open dialog.
+
+    Returns (path, cancelled). Raises Exception if tkinter is
+    unavailable or the dialog fails — the caller then falls back
+    to the DPG file dialog.
+    """
+    import tkinter as tk
+    from tkinter import filedialog
+    root = _make_tk_root()
+    root.withdraw()
+    root.attributes('-topmost', True)
+    try:
         path = filedialog.askopenfilename(title=title, filetypes=filetypes,
                                            initialdir=initialdir)
+    finally:
         root.destroy()
-        if path and os.path.isfile(path):
-            return path
-    except Exception:
-        pass
-    return None
+    if not path or not os.path.isfile(path):
+        return "", True
+    return path, False
 
 
 def _tk_pick_dir(title, initialdir=None):
+    """Tkinter directory dialog.
+
+    Returns (path, cancelled). Raises Exception if tkinter is
+    unavailable or the dialog fails — the caller then falls back
+    to the DPG file dialog.
+    """
+    import tkinter as tk
+    from tkinter import filedialog
+    root = _make_tk_root()
+    root.withdraw()
+    root.attributes('-topmost', True)
     try:
-        import tkinter as tk
-        from tkinter import filedialog
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes('-topmost', True)
         path = filedialog.askdirectory(title=title, initialdir=initialdir)
+    finally:
         root.destroy()
-        if path and os.path.isdir(path):
-            return path
-    except Exception:
-        pass
-    return None
+    if not path or not os.path.isdir(path):
+        return "", True
+    return path, False
 
 
 # ===================================================================
@@ -107,10 +147,11 @@ def _build_cli_preview():
     out = dpg.get_value(OUTPUT_INPUT).strip().strip('"')
     anim_mode = dpg.get_value(ANIM_MODE_COMBO)
     tex_mode  = dpg.get_value(TEX_MODE_COMBO)
+    is_cgf = cdf.lower().endswith(".cgf")
 
     parts = []
     if cdf:
-        parts.append('--cdf "%s"' % cdf)
+        parts.append('--cgf "%s"' % cdf if is_cgf else '--cdf "%s"' % cdf)
     game_dirs_to_show = list(_game_dirs) if _game_dirs else ([_auto_game_root] if _auto_game_root else [])
     for gd in game_dirs_to_show:
         parts.append('--gamedir "%s"' % gd)
@@ -119,16 +160,17 @@ def _build_cli_preview():
         ext = ".glb" if dpg.get_value(GLB_CHECK) else ".gltf"
         out_file = os.path.join(out, cdf_name + ext)
         parts.append('--out "%s"' % out_file)
-    if anim_mode == "Skip animations":
-        parts.append("--no-anim")
-    elif anim_mode == "Split per animation":
-        parts.append("--split-anim")
+    if not is_cgf:
+        if anim_mode == "Skip animations":
+            parts.append("--no-anim")
+        elif anim_mode == "Split per animation":
+            parts.append("--split-anim")
     if tex_mode == "Skip textures":
         parts.append("--no-tex")
     if dpg.get_value(GLB_CHECK):
         parts.append("--glb")
 
-    line = "Run_CrisTical.bat " + " ".join(parts) if parts else "Run_CrisTical.bat  (fill CDF path)"
+    line = "Run_CrisTical.bat " + " ".join(parts) if parts else "Run_CrisTical.bat  (fill CDF/CGF path)"
     dpg.set_value(CLI_LABEL, line)
 
 
@@ -372,9 +414,12 @@ def _remove_game_dir(sender, app_data, user_data):
 
 
 def _add_game_dir():
-    path = _tk_pick_dir("Select game directory")
-    if not path:
+    try:
+        path, cancelled = _tk_pick_dir("Select game directory")
+    except Exception:
         dpg.show_item("file_dialog_gamedir")
+        return
+    if cancelled:
         return
     _append_game_dir(path)
 
@@ -401,23 +446,31 @@ def _gamedir_dlg_callback(sender, app_data):
 # ===================================================================
 
 def browse_cdf():
-    path = _tk_pick_file("Select CDF or CHR file",
-                         [("Crysis character", "*.cdf *.chr"), ("All files", "*.*")])
-    if path:
-        dpg.set_value(CDF_INPUT, path)
-        _build_cli_preview()
-        scan_model()
-    else:
+    try:
+        path, cancelled = _tk_pick_file(
+            "Select CDF, CHR or CGF file",
+            [("Crysis model", "*.cdf *.chr *.cgf"), ("All files", "*.*")])
+    except Exception:
         dpg.show_item("file_dialog_cdf")
+        return
+    if cancelled:
+        return
+    dpg.set_value(CDF_INPUT, path)
+    _build_cli_preview()
+    scan_model()
 
 
 def browse_output():
-    path = _tk_pick_dir("Select output directory", initialdir=str(OUTPUT_DEFAULT))
-    if path:
-        dpg.set_value(OUTPUT_INPUT, path)
-        _build_cli_preview()
-    else:
+    try:
+        path, cancelled = _tk_pick_dir("Select output directory",
+                                        initialdir=str(OUTPUT_DEFAULT))
+    except Exception:
         dpg.show_item("file_dialog_out")
+        return
+    if cancelled:
+        return
+    dpg.set_value(OUTPUT_INPUT, path)
+    _build_cli_preview()
 
 
 def _file_callback(sender, app_data):
@@ -474,6 +527,40 @@ def scan_model():
         game_dirs = list(_game_dirs) if _game_dirs else ([_auto_game_root] if _auto_game_root else [])
         if not game_dirs:
             ct("GUI", "WARN: No game directories — material/animation search limited")
+
+        is_cgf = cdf_path.lower().endswith(".cgf")
+        if is_cgf:
+            data = read_cgf(cdf_path)
+            prims = read_cgf_meshes(cdf_path)
+            prim_count = len(prims)
+            att_count = 0
+            chr_path = cdf_path
+
+            mtl_count = 0
+            mtl_path = _cgf_resolve_mtl(
+                cdf_path, game_dirs,
+                [p.get("material") for p in prims] if prims else None)
+            if mtl_path and os.path.isfile(mtl_path):
+                import xml.etree.ElementTree as ET2
+                try:
+                    tree = ET2.parse(mtl_path)
+                    root = tree.getroot()
+                    sub = root.find("SubMaterials")
+                    mtl_count = len(sub.findall("Material")) if sub is not None else (
+                        1 if root.tag == "Material" else 0)
+                except Exception:
+                    pass
+
+            anim_info = "static (no animation)"
+            scan_text = ("Static .cgf   Primitives: %d   Meshes: %d"
+                         % (prim_count, len(data["mesh_chunks"])))
+            detect_text = "Materials: %d   Animations: %s" % (mtl_count, anim_info)
+            dpg.set_value(SCAN_LABEL, scan_text)
+            dpg.set_value(DETECT_LABEL, detect_text)
+            ct("Scan", scan_text)
+            ct("Scan", detect_text)
+            set_status((80, 210, 100), "Valid (static CGF)")
+            return
 
         data = read_chr_or_cdf(cdf_path)
         bones = data["skeleton"]
@@ -592,16 +679,23 @@ def run_conversion():
     ct("GUI", "Output file: %s" % out_gltf)
     ct("GUI", "CLI equivalent: " + dpg.get_value(CLI_LABEL))
 
+    is_cgf = cdf_path.lower().endswith(".cgf")
+
     def _run():
         global _running
         _running = True
         _q.put(("running", True))
         set_status((240, 200, 60), "RUNNING")
         try:
-            run_pipeline(cdf_path, game_dirs, out_gltf,
-                         do_anim=do_anim, do_tex=do_tex, split_anim=split_anim,
-                         glb=use_glb,
-                         progress_cb=lambda msg: ct("Pipeline", msg))
+            if is_cgf:
+                run_cgf_pipeline(cdf_path, game_dirs, out_gltf,
+                                 do_tex=do_tex, glb=use_glb,
+                                 progress_cb=lambda msg: ct("Pipeline", msg))
+            else:
+                run_pipeline(cdf_path, game_dirs, out_gltf,
+                             do_anim=do_anim, do_tex=do_tex, split_anim=split_anim,
+                             glb=use_glb,
+                             progress_cb=lambda msg: ct("Pipeline", msg))
             set_status((80, 210, 100), "DONE")
         except Exception as e:
             ct("GUI", "ERROR: %s" % str(e))
@@ -667,6 +761,7 @@ def build_gui():
     ):
         dpg.add_file_extension(".cdf", color=(80, 210, 100))
         dpg.add_file_extension(".chr", color=(255, 200, 100))
+        dpg.add_file_extension(".cgf", color=(100, 160, 255))
         dpg.add_file_extension(".*")
 
     with dpg.file_dialog(

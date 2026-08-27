@@ -15,6 +15,7 @@
 ## Возможности
 
 - **CDF-сборка** — автоматическое объединение Model + Attachments (CA_SKIN) в один glTF
+- **Статичный CGF** — `cgf2gltf.py` читает геометрию без скелета (чанки Mesh/Node/DataStream/MeshSubsets) с сохранением **вершинных цветов → COLOR_0** и **тангентов → TANGENT** (распаковка int16 SMeshTangents), иерархия нод запекается в мировое пространство
 - **Скелет** — полная иерархия костей с корректными инверсными bind-матрицами
 - **Меш** — все primitives с POSITION/NORMAL/UV/JOINTS/WEIGHTS
 - **Анимации** — поддержка DBA v0903 (оригинал) и v0905 (Remaster)
@@ -76,6 +77,24 @@ Run_CrisTical.bat --cdf alien.cdf --gamedir "F:\Games\Crysis\Game" --split-anim 
 
 ---
 
+# Статичная геометрия (.cgf)
+
+Для объектов без скелета (растительность, пропсы, здания) используется `cgf2gltf.py`:
+
+```batch
+Run_CrisTical.bat --cgf palm_tree_large_a.cgf --gamedir "F:\Games\Crysis_Remastered\Game"
+Run_CrisTical.bat --cgf bush.cgf --gamedir "F:\Games\Crysis\Game" --glb
+```
+
+Особенности:
+
+- **Вершинные цвета сохраняются** — `COLOR_0` (RGBA 0..1). Это те же байты `SMeshColor`, что использует шейдер растительности Crysis для detail bending: R=жёсткость края листа, G=фаза листа, B=жёсткость ветки, A=ambient occlusion.
+- **Тангенсы распаковываются** из упакованного формата `Vec4sf` (int16, f*32767).
+- **Мульти-материалы** — `mat_id` субмеша резолвится через `subMaterials` материала ноды (как в движке), с fallback по имени.
+- Формат прочитан из исходников движка: `CGFLoader.cpp` / `CryHeaders.h` (чанки Mesh 0xCCCC0000, Node 0xCCCC000B, MtlName 0xCCCC0014, DataStream 0xCCCC0016, MeshSubsets 0xCCCC0017).
+
+---
+
 ## Зачем нужны папки игры (`--gamedir`)
 
 Конвертер ищет три типа данных в указанных папках:
@@ -107,7 +126,8 @@ Run_CrisTical.bat --cdf alien.cdf --gamedir "F:\Games\Crysis\Game" --split-anim 
 
 | Флаг | Описание |
 |------|----------|
-| `--cdf <путь>` | Путь к `.cdf` или `.chr` файлу |
+| `--cdf <путь>` | Путь к `.cdf` или `.chr` файлу (анимированный персонаж) |
+| `--cgf <путь>` | Путь к статичному `.cgf` файлу (растительность/пропсы, без скелета) |
 | `--gamedir <папка>` | Корень игры (можно несколько, порядок = приоритет) |
 | `--out <путь>` | Выходная папка (по умолчанию: `output/`) |
 | `--no-anim` | Пропустить инжект анимаций |
@@ -162,10 +182,12 @@ CrisTical_Crysis3DConverter/
 ├── README.md / README.ru.md       # Документация
 ├── scripts/
 │   ├── cristical_gui.py          # Панель управления (DearPyGui)
-│   ├── cdf2gltf.py               # Оркестратор конвертации
+│   ├── cdf2gltf.py               # Оркестратор конвертации (персонажи)
+│   ├── cgf2gltf.py               # Оркестратор конвертации (статичный .cgf)
 │   └── cristical_core/           # Библиотека конвертера
 │       ├── crychr.py              # Парсер .chr/.cdf (CompiledBones, DataStream, CDF XML)
-│       ├── crygltf.py             # glTF 2.0 writer (скелет + меш + IBM + материалы)
+│       ├── crycgf.py              # Парсер статичного .cgf (Mesh/Node/MtlName/DataStream/MeshSubsets, стрим COLORS)
+│       ├── crygltf.py             # glTF 2.0 writer (скелет + меш + статика + COLOR_0 + TANGENT)
 │       ├── crydba.py              # Парсер DBA v0903/v0905 (SmallTree64, Bitset, TCB)
 │       ├── gltf_anim.py           # Инжектор анимаций + quaternion hemisphere fix
 │       ├── tex_convert.py         # Конвертер текстур (MTL→PNG, DDS→PNG, DDN Z, DDS unsplit)

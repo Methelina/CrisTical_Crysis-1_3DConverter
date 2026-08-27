@@ -216,3 +216,135 @@ def export_gltf(skeleton, mesh):
     }
 
     return gltf, buf
+
+
+# ---------------------------------------------------------------------------
+# Static geometry export (no skeleton) — for .cgf vegetation/props
+# ---------------------------------------------------------------------------
+
+def export_gltf_static(meshes):
+    """Export a list of primitive dicts (from crycgf.read_cgf_meshes) to glTF.
+
+    All primitives share ONE merged vertex buffer (positions/normals/uvs/
+    colors/tangents concatenated); each primitive becomes a sub-mesh with its
+    own indices accessor offset by the running vertex count. This is what
+    glTF importers that merge primitives into a single Unity mesh expect
+    (indices must reference the merged buffer).
+    """
+    buf = bytearray()
+    nodes = []
+    accessors = []
+    buffer_views = []
+
+    def append_buf(payload):
+        while len(buf) % 4:
+            buf.append(0)
+        off = len(buf)
+        buf.extend(payload)
+        view_idx = len(buffer_views)
+        buffer_views.append({"buffer": 0, "byteOffset": off, "byteLength": len(payload)})
+        return view_idx
+
+    def add_accessor(view_idx, count, acc_type, comp_type=5126, byte_off=0):
+        acc = {
+            "bufferView": view_idx,
+            "byteOffset": byte_off,
+            "componentType": comp_type,
+            "count": count,
+            "type": acc_type,
+        }
+        accessors.append(acc)
+        return len(accessors) - 1
+
+    total_v = sum(len(p["positions"]) for p in meshes)
+    total_i = sum(len(p["indices"]) for p in meshes)
+
+    pos_raw = []
+    nrm_raw = []
+    uv_raw = []
+    col_raw = []
+    tan_raw = []
+    all_nrm_has = bool(meshes) and all(len(p.get("normals", [])) == len(p["positions"]) for p in meshes)
+    all_uv_has = bool(meshes) and all(len(p.get("uvs", [])) == len(p["positions"]) for p in meshes)
+    all_col_has = bool(meshes) and all(len(p.get("colors", [])) == len(p["positions"]) for p in meshes)
+    all_tan_has = bool(meshes) and all(len(p.get("tangents", [])) == len(p["positions"]) for p in meshes)
+
+    cur = 0
+    prim_meta = []
+    for prim in meshes:
+        nv = len(prim["positions"])
+        for p in prim["positions"]:
+            g = AXIS_SWAP_POS(p)
+            pos_raw.extend(g)
+        if all_nrm_has:
+            for n in prim["normals"]:
+                g = AXIS_SWAP_NRM(n)
+                nrm_raw.extend(g)
+        if all_uv_has:
+            for uv in prim["uvs"]:
+                uv_raw.extend(uv)
+        if all_col_has:
+            for c in prim["colors"]:
+                col_raw.extend(c)
+        if all_tan_has:
+            for t in prim["tangents"]:
+                tan_raw.extend(t["tangent"])
+        prim_meta.append({
+            "mat_name": prim.get("material") or "material",
+            "mat_id": prim.get("mat_id", -1),
+            "indices": [vi + cur for vi in prim["indices"]],
+            "n_verts": nv,
+        })
+        cur += nv
+
+    # merged buffer accessors
+    pv = append_buf(struct.pack("<%df" % len(pos_raw), *pos_raw))
+    pa = add_accessor(pv, total_v, "VEC3")
+    xs = pos_raw[0::3]; ys = pos_raw[1::3]; zs = pos_raw[2::3]
+    if xs:
+        accessors[pa]["min"] = [min(xs), min(ys), min(zs)]
+        accessors[pa]["max"] = [max(xs), max(ys), max(zs)]
+
+    attributes = {"POSITION": pa}
+
+    if all_nrm_has and nrm_raw:
+        nv2 = append_buf(struct.pack("<%df" % len(nrm_raw), *nrm_raw))
+        attributes["NORMAL"] = add_accessor(nv2, total_v, "VEC3")
+
+    if all_uv_has and uv_raw:
+        uv_v = append_buf(struct.pack("<%df" % len(uv_raw), *uv_raw))
+        attributes["TEXCOORD_0"] = add_accessor(uv_v, total_v, "VEC2")
+
+    if all_col_has and col_raw:
+        col_v = append_buf(struct.pack("<%df" % len(col_raw), *col_raw))
+        attributes["COLOR_0"] = add_accessor(col_v, total_v, "VEC4")
+
+    if all_tan_has and tan_raw:
+        tan_v = append_buf(struct.pack("<%df" % len(tan_raw), *tan_raw))
+        attributes["TANGENT"] = add_accessor(tan_v, total_v, "VEC4")
+
+    gltf_mesh = {"name": "model", "primitives": []}
+    for pm in prim_meta:
+        idx_raw = pm["indices"]
+        iv = append_buf(struct.pack("<%dH" % len(idx_raw), *idx_raw))
+        ia = add_accessor(iv, len(idx_raw), "SCALAR", comp_type=5123)
+        gltf_mesh["primitives"].append({
+            "attributes": dict(attributes),
+            "indices": ia,
+            "_mat_name": pm["mat_name"],
+            "_mat_id": pm["mat_id"],
+        })
+
+    nodes.append({"name": "model", "mesh": 0})
+
+    gltf = {
+        "asset": {"version": "2.0", "generator": "CrisTical crygltf.py 1.2 (static)"},
+        "scenes": [{"nodes": [0]}],
+        "nodes": nodes,
+        "meshes": [gltf_mesh],
+        "accessors": accessors,
+        "bufferViews": buffer_views,
+        "buffers": [{"byteLength": len(buf)}],
+    }
+
+    return gltf, buf

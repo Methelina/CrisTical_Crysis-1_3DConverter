@@ -19,17 +19,19 @@ set "ENV_NAME=cris_env"
 set "ENV_DIR=%S%%ENV_NAME%"
 set "PYTHON_EXE=%ENV_DIR%\Scripts\python.exe"
 set "BIN_DIR=%S%Bin"
-set "EMBED_DIR=%S%python_embeded"
-set "EMBED_PYTHON=%EMBED_DIR%\python.exe"
 set "UV_VERSION=0.11.6"
 set "ASSIMP_VERSION=6.0.5"
-set "PY_EMBED_VER=3.11.9"
-set "PY_EMBED_URL=https://www.python.org/ftp/python/%PY_EMBED_VER%/python-%PY_EMBED_VER%-embed-amd64.zip"
+set "UV_PY_VERSION=3.11"
+
+REM ---- portability isolation (same as Colibri: uv caches inside the project) ----
+set "UV_CACHE_DIR=%S%.cache\uv"
+set "TMP=%S%.cache\tmp"
+set "TEMP=%S%.cache\tmp"
 
 mkdir "%BIN_DIR%" 2>nul
 mkdir "%S%output" 2>nul
-mkdir "%S%temp" 2>nul
-mkdir "%S%.cache" 2>nul
+mkdir "%S%.cache\uv" 2>nul
+mkdir "%S%.cache\tmp" 2>nul
 
 for %%D in (uv_tmp 7z_tmp assimp_tmp) do (if exist "%S%%%D" rmdir /s /q "%S%%%D")
 for %%F in (uv.zip 7za.zip assimp.zip) do (if exist "%S%%%F" del /q "%S%%%F")
@@ -77,11 +79,11 @@ exit /b 0
 
 
 REM ==================================================================
-REM  STAGE 1/5  —  uv
+REM  STAGE 1/7  —  uv
 REM ==================================================================
 :stage_uv
 echo.
-echo  [1/5] uv package manager v%UV_VERSION%
+echo  [1/7] uv package manager v%UV_VERSION%
 if exist "%S%uv.exe" (
     echo   [OK] uv.exe already present
 ) else (
@@ -97,53 +99,47 @@ if exist "%S%uv.exe" (
     )
     echo   [OK] uv.exe installed
 )
-REM  переходим к установке Python (всегда!)
 goto :stage_python
 
 
 REM ==================================================================
-REM  STAGE 2/6  —  Python 3.11 (always embedded for bpy compatibility)
+REM  STAGE 2/7  —  Python 3.11 (uv-managed, includes tkinter)
 REM ==================================================================
 :stage_python
 echo.
-echo  [2/6] Python 3.11 provisioning (always embedded for bpy compatibility)
-
-set "BASE_PYTHON="
-
-if exist "%EMBED_PYTHON%" (
-    set "BASE_PYTHON=%EMBED_PYTHON%"
-    echo   [OK] Bundled Python %PY_EMBED_VER% found
-) else (
-    echo   Downloading Python %PY_EMBED_VER% embeddable...
-    call :download "%PY_EMBED_URL%" "%S%python_embed.zip" "Python %PY_EMBED_VER% embeddable" || goto :fail
-    call :extract "%S%python_embed.zip" "%EMBED_DIR%"
-    del /q "%S%python_embed.zip" 2>nul
-    if exist "%EMBED_PYTHON%" (
-        set "BASE_PYTHON=%EMBED_PYTHON%"
-        echo   [OK] Python %PY_EMBED_VER% embeddable installed
-    ) else (
-        echo   [ERROR] Python embeddable extraction failed
-        goto :fail
-    )
+echo  [2/7] Python %UV_PY_VERSION% (uv-managed, includes tkinter)
+"%S%uv.exe" python install %UV_PY_VERSION%
+if %ERRORLEVEL% neq 0 (
+    echo   [ERROR] Failed to install Python %UV_PY_VERSION% via uv
+    goto :fail
 )
-echo   Using: %BASE_PYTHON%
+echo   [OK] Python %UV_PY_VERSION% ready
 goto :stage_venv
 
 
 REM ==================================================================
-REM  STAGE 3/6  —  Python 3.11 venv
+REM  STAGE 3/7  —  Python venv (idempotent)
 REM ==================================================================
 :stage_venv
 echo.
-echo  [3/6] Python venv (%ENV_NAME%)
+echo  [3/7] Python venv (%ENV_NAME%)
+set "NEED_CREATE=1"
 if exist "%PYTHON_EXE%" (
-    echo   [WARN] Environment already exists
-    set /p "RECREATE=  Delete and recreate? (Y/N): "
-    if /i "!RECREATE!"=="Y" (rmdir /s /q "%ENV_DIR%") else (echo   Keeping existing environment & goto :stage_pip)
+    if exist "%ENV_DIR%\pyvenv.cfg" (
+        findstr /I /C:"python_embeded" "%ENV_DIR%\pyvenv.cfg" >nul 2>nul
+        if errorlevel 1 set "NEED_CREATE=0"
+    )
 )
-
+if "!NEED_CREATE!"=="0" (
+    echo   [OK] Environment already present — skipping
+    goto :stage_cleanup
+)
+if exist "%ENV_DIR%" (
+    echo   [WARN] Recreating environment (references removed embedded Python)
+    rmdir /s /q "%ENV_DIR%"
+)
 echo   Creating venv...
-"%S%uv.exe" venv "%ENV_DIR%" --python "%BASE_PYTHON%"
+"%S%uv.exe" venv "%ENV_DIR%" --python %UV_PY_VERSION%
 set "UV_RC=%ERRORLEVEL%"
 if not exist "%PYTHON_EXE%" (
     echo   [ERROR] Failed to create venv (rc=%UV_RC%^)
@@ -153,11 +149,25 @@ echo   [OK] Environment created
 
 
 REM ==================================================================
-REM  STAGE 4/6  —  pip packages
+REM  STAGE 4/7  —  cleanup legacy artifacts
+REM ==================================================================
+:stage_cleanup
+if exist "%S%python_embeded" (
+    rmdir /s /q "%S%python_embeded"
+    echo   [INFO] Removed legacy embedded Python (python_embeded)
+)
+if exist "%S%.uv_python" (
+    rmdir /s /q "%S%.uv_python"
+    echo   [INFO] Removed legacy .uv_python staging dir
+)
+
+
+REM ==================================================================
+REM  STAGE 5/7  —  pip packages
 REM ==================================================================
 :stage_pip
 echo.
-echo  [4/6] Python packages (pyassimp numpy pillow trimesh pygltflib bpy dearpygui)
+echo  [5/7] Python packages (pyassimp numpy pillow trimesh pygltflib bpy dearpygui)
 echo   Installing packages (this may take 5-15 minutes)...
 "%S%uv.exe" pip install --python "%PYTHON_EXE%" pyassimp numpy pillow trimesh pygltflib bpy dearpygui
 set "PIP_RC=%ERRORLEVEL%"
@@ -166,10 +176,10 @@ echo   [OK] Packages stage completed
 
 
 REM ==================================================================
-REM  STAGE 5/6  —  7-Zip portable
+REM  STAGE 6/7  —  7-Zip portable
 REM ==================================================================
 echo.
-echo  [5/6] 7-Zip portable (7za.exe)
+echo  [6/7] 7-Zip portable (7za.exe)
 if exist "%BIN_DIR%\7za.exe" (echo   [OK] 7za.exe already present & goto :stage_assimp)
 
 call :download "https://www.7-zip.org/a/7za920.zip" "%S%7za.zip" "7za920.zip"
@@ -183,11 +193,11 @@ if exist "%BIN_DIR%\7za.exe" (echo   [OK] 7za.exe installed) else (echo   [WARN]
 
 
 REM ==================================================================
-REM  STAGE 6/6  —  Assimp DLL
+REM  STAGE 7/7  —  Assimp DLL
 REM ==================================================================
 :stage_assimp
 echo.
-echo  [6/6] Assimp %ASSIMP_VERSION% (assimp.dll)
+echo  [7/7] Assimp %ASSIMP_VERSION% (assimp.dll)
 if exist "%BIN_DIR%\assimp.dll" (echo   [OK] assimp.dll already present & goto :done)
 
 call :download "https://github.com/assimp/assimp/releases/download/v%ASSIMP_VERSION%/windows-x64-v%ASSIMP_VERSION%.zip" "%S%assimp.zip" "Assimp %ASSIMP_VERSION%"

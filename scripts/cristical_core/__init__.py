@@ -8,7 +8,8 @@ Version: 2.0
 """
 
 from .crychr import read_chr, read_chr_or_cdf, read_cdf
-from .crygltf import export_gltf
+from .crycgf import read_cgf, read_cgf_meshes
+from .crygltf import export_gltf, export_gltf_static
 from .crydba import read_dba, has_tcb_controllers, read_dba_version
 from .gltf_anim import GltfAnimationInjector
 from .tex_convert import convert_materials

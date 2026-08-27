@@ -10,6 +10,7 @@ build/
 cris_env/
 python_embeded/
 python_embeded
+.uv_python/
 
 # Native binaries (downloaded by installer)
 Bin/

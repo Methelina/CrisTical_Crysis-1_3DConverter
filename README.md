@@ -3,8 +3,9 @@
 Converts Crysis 1 characters (original + Remaster) to glTF 2.0.
 Uses `.cdf` (Character Definition File) as the root assembly point,
 merging the main model with all attachments into a single output.
+Also converts **static geometry** (`.cgf` vegetation, props) without a skeleton.
 
-Reads data from binary .chr/.dba/.mtl files using CryEngine format specifications. No third-party converters required.
+Reads data from binary .chr/.cgf/.dba/.mtl files using CryEngine format specifications. No third-party converters required.
 
 **Author:** Soror L.'.L.'. aka Methelina &nbsp;|&nbsp; **Version:** 2.1 &nbsp;|&nbsp; **License:** Apache 2.0
 
@@ -17,13 +18,14 @@ Reads data from binary .chr/.dba/.mtl files using CryEngine format specification
 - **CDF assembly** — auto-merge Model + CA_SKIN Attachments into one glTF
 - **Skeleton** — full bone hierarchy with correct inverse-bind matrices
 - **Mesh** — all primitives with POSITION/NORMAL/UV/JOINTS/WEIGHTS
+- **Static CGF** — `cgf2gltf.py` reads skeleton-free geometry (Mesh/Node/DataStream/MeshSubsets chunks) with **vertex colors → COLOR_0** and **tangents → TANGENT** preserved (int16 SMeshTangents unpacked), node hierarchy baked into world space
 - **Animations** — supports DBA v0903 (original) and v0905 (Remaster)
 - **Textures** — auto-convert DDS (DXT1/DXT5/ATI2N/3DC/RGBA8/L8) → PNG
 - **DDN normals** — Z-channel reconstruction, DDNA gloss extraction by suffix
 - **Emission** — Diffuse alpha → emissiveTexture (emission power in Crysis)
 - **DDS-Unsplit** — combines split files (.dds.0/.1/...) into single DDS (mip-0) based on [DDS-Unsplitter](https://github.com/Markemp/DDS-Unsplitter) method 
 - **Materials** — PBR metallicRoughness + baseColorTexture + normalTexture from .mtl
-- **Multi-material** — per-attachment .mtl loading
+- **Multi-material** — per-attachment .mtl loading; CGF subset mat_id resolved through node material subMaterials
 - **Split animations** — export each animation as a separate glTF
 - **GLB export** — single binary file output option
 - **Quaternion fix** — eliminates bone-twisting artifacts
@@ -58,6 +60,10 @@ Opens the control panel: select .cdf → auto-scan model → configure animation
 ```batch
 Run_CrisTical.bat --cdf alien.cdf --gamedir "F:\Games\Crysis\Game" --out output
 Run_CrisTical.bat --cdf alien.cdf --gamedir "F:\Games\Crysis\Game" --split-anim --glb
+
+# Static geometry (vegetation, props) — vertex colors + tangents preserved
+Run_CrisTical.bat --cgf palm_tree_large_a.cgf --gamedir "F:\Games\Crysis_Remastered\Game"
+Run_CrisTical.bat --cgf bush.cgf --gamedir "F:\Games\Crysis\Game" --glb
 ```
 
 ---
@@ -109,7 +115,8 @@ Recommended order: **Remaster → original → unpacked content**.
 
 | Flag | Description |
 |------|-------------|
-| `--cdf <path>` | Path to `.cdf` or `.chr` file |
+| `--cdf <path>` | Path to `.cdf` or `.chr` file (animated character) |
+| `--cgf <path>` | Path to static `.cgf` file (vegetation/props, no skeleton) |
 | `--gamedir <dir>` | Game root folder (repeatable; order = priority) |
 | `--out <path>` | Output directory (default: `output/`) |
 | `--no-anim` | Skip animation injection |
@@ -117,6 +124,10 @@ Recommended order: **Remaster → original → unpacked content**.
 | `--split-anim` | Export each animation as a separate glTF |
 | `--glb` | Output as binary `.glb` instead of `.gltf`+`.bin` |
 | `--help` | Show help |
+
+For static `.cgf` conversion the vertex colors (COLOR_0) are the CryEngine
+`SMeshColor` RGBA bytes — same convention Crysis vegetation shaders use for
+detail bending (R=edge stiffness, G=leaf phase, B=branch stiffness, A=AO).
 
 ---
 
@@ -146,6 +157,7 @@ With `--split-anim`, each animation is placed in a `model_name_anims/` subdirect
 |------|--------|----------|
 | .cdf | Character Definition (XML) | CryEngine 1–3 |
 | .chr | CryTek chunk file | v0744, v0745 |
+| .cgf | Static CryTek chunk file (Mesh/Node/DataStream/MeshSubsets) | v0744, v0745 |
 | .dba | CryAnimation Database | v0903, v0905 |
 | .mtl | XML material | single/multi-material |
 | .dds | DirectDraw Surface (split/combined) | DXT1, DXT5, ATI2N/3DC, RGBA8, L8 |
@@ -162,10 +174,12 @@ CrisTical_Crysis3DConverter/
 ├── README.md / README.ru.md       # Documentation
 ├── scripts/
 │   ├── cristical_gui.py          # Control panel (DearPyGui)
-│   ├── cdf2gltf.py               # Conversion orchestrator
+│   ├── cdf2gltf.py               # Conversion orchestrator (characters)
+│   ├── cgf2gltf.py               # Conversion orchestrator (static .cgf)
 │   └── cristical_core/           # Converter library
 │       ├── crychr.py              # .chr/.cdf parser (CompiledBones, DataStream, CDF XML)
-│       ├── crygltf.py             # glTF 2.0 writer (skeleton + mesh + IBM + materials)
+│       ├── crycgf.py              # Static .cgf parser (Mesh/Node/MtlName/DataStream/MeshSubsets, COLORS stream)
+│       ├── crygltf.py             # glTF 2.0 writer (skeleton + mesh + static + COLOR_0 + TANGENT)
 │       ├── crydba.py              # DBA v0903/v0905 parser (SmallTree64, Bitset, TCB)
 │       ├── gltf_anim.py           # Animation injector + quaternion hemisphere fix
 │       ├── tex_convert.py         # Texture converter (MTL→PNG, DDS→PNG, DDN Z, DDS unsplit)
