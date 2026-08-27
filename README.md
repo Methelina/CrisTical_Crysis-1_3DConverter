@@ -30,8 +30,18 @@ Reads data from binary .chr/.cgf/.dba/.mtl files using CryEngine format specific
 - **GLB export** — single binary file output option
 - **Quaternion fix** — eliminates bone-twisting artifacts
 - **GUI + CLI** — graphical control panel and full command-line mode
+- **Native file dialogs** — Browse/+ buttons open the OS picker (tkinter); the built-in dialog is only a fallback
 - **Auto-detect game root** — GUI finds game directory by walking up from .cdf
 - **Universal** — works with any Crysis 1 character or object
+
+---
+
+## System Requirements
+
+- **Windows 10/11 (64-bit)**
+- **~2 GB of free disk space** (Python + packages + game data processing)
+- **Internet connection during installation** — no manual Python install is needed; the installer provisions Python 3.11 automatically
+- **tkinter** — comes with the provisioned Python; used by the GUI for native OS file dialogs
 
 ---
 
@@ -39,13 +49,19 @@ Reads data from binary .chr/.cgf/.dba/.mtl files using CryEngine format specific
 
 ### Installation
 
-Run `Install_CrisTical.bat` once to download and set up:
+Run `Install_CrisTical.bat` once. The installer automatically downloads and sets up:
 
-- Python 3.11 with required libraries (pyassimp, numpy, pillow, bpy, dearpygui, trimesh, pygltflib) for 3D format processing
+- **uv** — the package manager used to provision the environment
+- **Python 3.11** — full uv-managed build (includes **tkinter** for the native OS file dialogs in the GUI)
+- Python libraries (pyassimp, numpy, pillow, bpy, dearpygui, trimesh, pygltflib) for 3D format processing
 - Assimp 6.0.5 (assimp.dll)
 - 7-Zip (7za.exe) — for .dba extraction from Animations.pak
 
-Everything is portable within the project folder. Internet required only during installation.
+The installer is **idempotent** — re-running it skips already-installed parts and
+only rebuilds the venv when it is missing or outdated. All download caches live
+inside the project (`.cache/uv`), the venv is created in `cris_env/`, and the
+Python interpreter itself is provisioned per-user by uv. Internet is required
+only during installation.
 
 ### Launch GUI
 
@@ -78,6 +94,7 @@ The control panel shows:
 - **Game Dir Status** — green (valid) / yellow (no markers) / red (not found)
 - **Model Scan** — Bones, Primitives, Attachments, Materials, Animations
 - **Auto-detection** — GUI walks up from .cdf to find game root automatically
+- **Native dialogs** — file/folder pickers use the OS dialog (tkinter); the built-in dialog only appears if tkinter is unavailable
 - **CLI Preview** — shows the equivalent command-line command
 
 ---
@@ -188,8 +205,9 @@ CrisTical_Crysis3DConverter/
 ├── resources/
 │   └── ModeSevenBETAVHS.ttf      # Interface font
 ├── docs/                          # Screenshots
+├── .cache/                        # uv download cache (installer)
 ├── Bin/                           # Native tools (installer)
-├── cris_env/                      # Python venv (installer)
+├── cris_env/                      # Python venv (created by installer)
 ├── output/                        # Output folder
 └── temp/                          # Temporary files
 ```
