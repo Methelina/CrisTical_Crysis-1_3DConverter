@@ -2,19 +2,19 @@
 # -*- coding: utf-8 -*-
 
 """
-cgf2gltf.py — CrisTical: static CryTek .cgf -> glTF 2.0 converter
+cgf2gltf.py — CrisTical: static Crysis .cgf -> glTF 2.0 converter
 Authors: Soror L.'.L.'. aka Methelina    Project: CrisTical
 Version: 1.0
 
 Converts static compiled CGF geometry (vegetation, props, buildings —
 anything without a skeleton) to glTF 2.0, preserving:
 
-  - vertex colors  -> COLOR_0 (RGBA 0..1 floats; native CryEngine 8-bit)
-  - tangents       -> TANGENT  (VEC4, unpacked from int16 SMeshTangents)
+  - vertex colors  -> COLOR_0 (RGBA 0..1 floats; 8-bit source values)
+  - tangents       -> TANGENT  (VEC4, unpacked from int16 packed tangents)
   - UVs, normals, indices, node hierarchy baked into world space
   - .mtl materials -> PBR glTF materials (diffuse/normal/specular + DDS->PNG)
 
-Based on the exact engine format (CGFLoader.cpp / CryHeaders.h):
+Chunk layout determined by independent analysis of sample files:
 Mesh 0xCCCC0000, Node 0xCCCC000B, MtlName 0xCCCC0014,
 DataStream 0xCCCC0016, MeshSubsets 0xCCCC0017.
 
@@ -38,6 +38,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 
 from cristical_core import read_cgf, read_cgf_meshes, export_gltf_static, convert_materials
+from cristical_core.mtl_resolve import resolve_mtl
 
 _PROJ_TEMP = os.path.join(os.path.dirname(SCRIPT_DIR), "temp")
 
@@ -55,90 +56,19 @@ _clean_temp()
 
 
 def _mtl_submaterial_names(mtl_path):
-    """Parse .mtl and return set of sub-material names (for scoring candidates)."""
-    import xml.etree.ElementTree as ET
-    try:
-        tree = ET.parse(mtl_path)
-    except Exception:
-        return set()
-    root = tree.getroot()
-    names = set()
-    sub = root.find("SubMaterials")
-    if sub is not None:
-        for m in sub.findall("Material"):
-            n = m.get("Name")
-            if n:
-                names.add(n)
-    elif root.tag == "Material":
-        n = root.get("Name")
-        if n:
-            names.add(n)
-    return names
+    """Parse .mtl and return set of sub-material names (shared helper)."""
+    from cristical_core.mtl_resolve import submaterial_names
+    return submaterial_names(mtl_path)
 
 
-def _resolve_mtl(cgf_path, game_dirs, prim_materials=None):
+def _resolve_mtl(cgf_path, game_dirs, prim_materials=None, verbose=True, log=None):
     """Find the best .mtl for a static CGF.
 
-    Scoring: exact file-name match wins; otherwise pick the candidate whose
-    sub-material names cover the primitive material names the most (that is
-    how the engine binds a multi-material MtlName chunk to a mesh node).
+    Delegates to the shared resolver in cristical_core.mtl_resolve with the
+    LOD/size suffix stripping enabled (CGF variants like palm_tree_large_a).
     """
-    import xml.etree.ElementTree as ET
-
-    mtl = os.path.splitext(cgf_path)[0] + ".mtl"
-    if os.path.isfile(mtl):
-        return mtl
-
-    want = set(prim_materials or [])
-    cgf_base = os.path.splitext(os.path.basename(cgf_path))[0].lower()
-    # strip lod/size suffixes: palm_tree_large_a -> palm_tree_large
-    base_root = cgf_base
-    for suf in ("_lod1", "_lod2", "_lod3", "_lod4", "_lod5"):
-        if base_root.endswith(suf):
-            base_root = base_root[: -len(suf)]
-    if base_root[-2:] in ("_a", "_b", "_c", "_d", "_e", "_f", "_g", "_h"):
-        base_root = base_root[:-2]
-
-    candidates = []
-    seen = set()
-    if os.path.isdir(os.path.dirname(cgf_path)):
-        for f in os.listdir(os.path.dirname(cgf_path)):
-            if f.lower().endswith(".mtl"):
-                p = os.path.join(os.path.dirname(cgf_path), f)
-                seen.add(os.path.normpath(p))
-                candidates.append(p)
-    for gd in game_dirs:
-        for root, dirs, files in os.walk(gd):
-            for f in files:
-                if f.lower().endswith(".mtl"):
-                    p = os.path.join(root, f)
-                    np = os.path.normpath(p)
-                    if np not in seen:
-                        seen.add(np)
-                        candidates.append(p)
-
-    best = None
-    best_score = -1
-    for p in candidates:
-        bn = os.path.splitext(os.path.basename(p).lower())[0]
-        if bn == cgf_base or bn == base_root:
-            return p
-        names = _mtl_submaterial_names(p)
-        if want and names:
-            score = len(names & want)
-            if score > best_score:
-                best_score = score
-                best = p
-    if best is not None:
-        return best
-
-    # fallback: first .mtl next to the cgf
-    cgf_dir = os.path.dirname(cgf_path)
-    if os.path.isdir(cgf_dir):
-        candidates = [f for f in os.listdir(cgf_dir) if f.lower().endswith(".mtl")]
-        if candidates:
-            return os.path.join(cgf_dir, candidates[0])
-    return mtl
+    return resolve_mtl(cgf_path, game_dirs, prim_materials=prim_materials,
+                       strip_suffixes=True, verbose=verbose, log=log or print)
 
 
 def _write_glb(gltf, bin_bytes, out_path):
@@ -199,7 +129,7 @@ def run_pipeline(input_path, game_dirs, out_gltf, do_tex=True, progress_cb=None,
         mtl_path = _resolve_mtl(input_path, game_dirs, prim_materials)
         L("  MTL: %s" % mtl_path)
         if os.path.isfile(mtl_path):
-            mats, pngs, mat_info, tex_sources = convert_materials(mtl_path, game_dirs, out_dir)
+            mats, pngs, mat_info, tex_sources, xml_to_mat = convert_materials(mtl_path, game_dirs, out_dir)
             if mats:
                 L("  Materials (%d):" % len(mat_info))
                 for mi in mat_info:
@@ -249,9 +179,13 @@ def run_pipeline(input_path, game_dirs, out_gltf, do_tex=True, progress_cb=None,
                             (i for i, m in enumerate(mats)
                              if (norm(m.get("name", "")) or "").startswith(tn)
                              or tn.startswith(norm(m.get("name", "")))), None)
-                    # 4) fall back to the .mtl SubMaterials index (subset mat_id order)
-                    if idx_m is None and 0 <= mat_id < len(mats):
-                        idx_m = mat_id
+                    # 4) fall back through the Nodraw-aware mat_id mapping
+                    #    (mat_id is the .mtl XML sub-material index; xml_to_mat
+                    #    translates it to the non-Nodraw materials list)
+                    if idx_m is None:
+                        mapped = xml_to_mat.get(mat_id)
+                        if mapped is not None:
+                            idx_m = mapped
                     prim["material"] = idx_m if idx_m is not None else 0
                 L("  %d textures, %d materials" % (len(png_files), len(mats)))
         else:

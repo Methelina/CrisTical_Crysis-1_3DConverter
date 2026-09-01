@@ -6,17 +6,14 @@ crychr.py — Crysis 1 .chr / .cgf chunk file reader
 Authors: Soror L.'.L.'. aka Methelina    Project: CrisTical
 Version: 1.1
 
-=== CryTek chunk file + compiled character (CHR) parser ===
+=== Crysis binary chunk file + compiled character (CHR) parser ===
 
-Parses CryEngine 1 compiled character files (.chr) using the stream-based
+Parses Crysis 1 compiled character files (.chr) using the stream-based
 format (Mesh v0800 + DataStream v0800).  Bone data comes from
-ChunkType_CompiledBones (0xACDC0000, v0800).  Geometry comes from
-MESH_CHUNK_DESC_0800 + STREAM_DATA_CHUNK_DESC_0800 + MeshSubsets v0800.
+ChunkType_CompiledBones (0xACDC0000, v0800).  Geometry comes from the
+mesh chunk + stream data chunk + MeshSubsets v0800.
 
-Format references:
-  - CryHeaders.h  :: CryBoneDescData_Comp, MESH_CHUNK_DESC_0800, ECgfStreamType
-  - LoaderCHR.cpp :: skeleton building (jointsAbsolute / jointsRelative)
-  - CGFLoader.cpp :: stream-based mesh reading, ProcessSkinning
+Chunk layouts determined by independent analysis of sample .chr files.
 
 Exposed API:
   read_chr(path) -> dict
@@ -61,7 +58,7 @@ LEN_Ext2IntMapHdr = 16
 def _chunk_table(raw):
     sig = raw[:6]
     if sig != b"CryTek":
-        raise ValueError("not a CryTek chunk file")
+        raise ValueError("not a Crysis binary chunk file")
     ft, fv, cto, nch = struct.unpack_from("<IIII", raw, 8)
     entry_size = 20 if fv == 0x0745 else 16
     chunks = []

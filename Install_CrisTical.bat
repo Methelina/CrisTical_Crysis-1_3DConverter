@@ -167,11 +167,23 @@ REM  STAGE 5/7  —  pip packages
 REM ==================================================================
 :stage_pip
 echo.
-echo  [5/7] Python packages (pyassimp numpy pillow trimesh pygltflib bpy dearpygui)
+echo  [5/7] Python packages (from requirements.txt: 3D + GUI + MCP bridge)
+if not exist "%S%requirements.txt" (
+    echo   [ERROR] requirements.txt not found in %S%
+    goto :fail
+)
 echo   Installing packages (this may take 5-15 minutes)...
-"%S%uv.exe" pip install --python "%PYTHON_EXE%" pyassimp numpy pillow trimesh pygltflib bpy dearpygui
+"%S%uv.exe" pip install --python "%PYTHON_EXE%" -r "%S%requirements.txt"
 set "PIP_RC=%ERRORLEVEL%"
-if !PIP_RC! neq 0 (echo   [WARN] pip returned code !PIP_RC!)
+if !PIP_RC! neq 0 (
+    echo   [WARN] pip returned code !PIP_RC! — retrying once...
+    "%S%uv.exe" pip install --python "%PYTHON_EXE%" -r "%S%requirements.txt"
+    set "PIP_RC=!ERRORLEVEL!"
+)
+if !PIP_RC! neq 0 (
+    echo   [ERROR] package installation failed — see messages above
+    goto :fail
+)
 echo   [OK] Packages stage completed
 
 
@@ -198,16 +210,40 @@ REM ==================================================================
 :stage_assimp
 echo.
 echo  [7/7] Assimp %ASSIMP_VERSION% (assimp.dll)
-if exist "%BIN_DIR%\assimp.dll" (echo   [OK] assimp.dll already present & goto :done)
+if exist "%BIN_DIR%\assimp.dll" (echo   [OK] assimp.dll already present & goto :stage_mcp)
 
 call :download "https://github.com/assimp/assimp/releases/download/v%ASSIMP_VERSION%/windows-x64-v%ASSIMP_VERSION%.zip" "%S%assimp.zip" "Assimp %ASSIMP_VERSION%"
-if %ERRORLEVEL% neq 0 (echo   [ERROR] Assimp download failed & goto :done)
+if %ERRORLEVEL% neq 0 (echo   [ERROR] Assimp download failed & goto :stage_mcp)
 
 call :extract "%S%assimp.zip" "%S%assimp_tmp"
 for /r "%S%assimp_tmp" %%F in (assimp-vc143-mt.dll) do copy /y "%%F" "%BIN_DIR%\assimp.dll" >nul 2>nul
 rmdir /s /q "%S%assimp_tmp" 2>nul
 del /q "%S%assimp.zip" 2>nul
 if exist "%BIN_DIR%\assimp.dll" (echo   [OK] assimp.dll installed) else (echo   [ERROR] DLL not found after extraction)
+
+
+REM ==================================================================
+REM  VERIFY  —  MCP bridge imports (FastMCP + converter deps)
+REM ==================================================================
+:stage_mcp
+echo.
+echo  [VERIFY] MCP bridge (scripts\MCP_CrisTical_bridge.py)
+set "MCP_BRIDGE=%S%scripts\MCP_CrisTical_bridge.py"
+if not exist "!MCP_BRIDGE!" (
+    echo   [WARN] MCP bridge script not found: !MCP_BRIDGE!
+    goto :done
+)
+"%PYTHON_EXE%" -c "import sys; sys.path.insert(0, r'%S%scripts'); import MCP_CrisTical_bridge" >nul 2>nul
+if %ERRORLEVEL% neq 0 (
+    echo   [ERROR] MCP bridge import failed — check that 'mcp' is installed:
+    echo     "%S%uv.exe" pip install --python "%PYTHON_EXE%" "mcp[cli]>=1.29,<2"
+    "%S%uv.exe" pip install --python "%PYTHON_EXE%" "mcp[cli]>=1.29,<2"
+    "%PYTHON_EXE%" -c "import sys; sys.path.insert(0, r'%S%scripts'); import MCP_CrisTical_bridge" >nul 2>nul
+    if !ERRORLEVEL! neq 0 (echo   [ERROR] MCP bridge still failing) else (echo   [OK] MCP bridge repaired and imports cleanly)
+    goto :done
+)
+echo   [OK] MCP bridge imports cleanly (FastMCP ready)
+goto :done
 
 
 REM ==================================================================
@@ -224,10 +260,20 @@ echo   Location: %S%
 echo   Python:   %PYTHON_EXE%
 echo   Assimp:   %BIN_DIR%\assimp.dll
 echo   7-Zip:    %BIN_DIR%\7za.exe
+echo   MCP:      %S%scripts\MCP_CrisTical_bridge.py  (cristical MCP server)
 echo.
 echo   Launch the converter:
 echo     Run_CrisTical.bat                     (GUI mode)
 echo     Run_CrisTical.bat --cdf model.cdf -g GameDir   (CLI mode)
+echo.
+echo   MCP registration (Kilo Code / kilo.json):
+echo     "cristical": {
+echo       "type": "local",
+echo       "command": ["%PYTHON_EXE%",
+echo                   "%S%scripts\MCP_CrisTical_bridge.py"],
+echo       "enabled": true,
+echo       "timeout": 600000
+echo     }
 echo.
 pause
 exit /b 0

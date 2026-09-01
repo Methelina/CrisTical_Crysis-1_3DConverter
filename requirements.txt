@@ -1,0 +1,20 @@
+# CrisTical Crysis3D Converter — Python dependencies
+# Installed by Install_CrisTical.bat (stage 5/7) via:
+#   uv pip install --python cris_env/Scripts/python.exe -r requirements.txt
+
+# --- 3D format processing ---
+pyassimp          # Assimp bindings (assimp.dll from Bin/)
+numpy             # vertex/index math
+pillow            # DDS -> PNG texture conversion
+trimesh           # mesh utilities
+pygltflib         # glTF 2.0 schema helpers
+bpy               # blender pipeline helpers
+
+# --- GUI ---
+dearpygui         # control panel (cristical_gui.py)
+# tkinter         # ships with the uv-managed Python build; native OS dialogs
+
+# --- MCP bridge (scripts/MCP_CrisTical_bridge.py) ---
+# FastMCP lives at mcp.server.fastmcp in the 1.x line; 2.x renames it to
+# MCPServer, so the upper bound keeps the bridge import stable.
+mcp[cli]>=1.29,<2

@@ -20,6 +20,8 @@ uvx.exe
 # Output and temp
 output/
 temp/
+docs/internal/
+
 scripts/_temp/
 
 # Cache

@@ -2,13 +2,13 @@
 # -*- coding: utf-8 -*-
 
 """
-crygltf.py — CryEngine CHR/mesh -> glTF 2.0 exporter
+crygltf.py — Crysis CHR/mesh -> glTF 2.0 exporter
 Authors: Soror L.'.L.'. aka Methelina    Project: CrisTical
 Version: 1.0
 
 === glTF skeleton + skin + mesh writer with unified axis conversion ===
 
-Converts CryEngine right-handed Z-up coords to glTF right-handed Y-up
+Converts the source right-handed Z-up coords to glTF right-handed Y-up
 using a single similarity transform C: (x,y,z) -> (-x, z, y).
 
 API:

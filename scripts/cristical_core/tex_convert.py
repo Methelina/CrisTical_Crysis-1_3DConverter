@@ -165,7 +165,7 @@ def convert_materials(mtl_path, game_dirs, out_dir):
             sub_mats = root
         else:
             print("[tex] no SubMaterials in %s" % mtl_path)
-            return [], [], [], {}
+            return [], [], [], {}, {}
 
     materials = []
     mat_info = []
@@ -173,6 +173,7 @@ def convert_materials(mtl_path, game_dirs, out_dir):
     images = []
     tex_sources = {}
     tex_count = 0
+    xml_to_mat = {}
 
     def ensure_texture(file_ref, mat_name, map_type):
         nonlocal tex_count
@@ -207,10 +208,11 @@ def convert_materials(mtl_path, game_dirs, out_dir):
                 print("  %s/%s: %s -> %s" % (mat_name, extra_type, os.path.basename(orig_path), os.path.basename(extra)))
         return {"index": tex_index[key]}
 
-    for mat_el in sub_mats.findall("Material"):
+    for xml_idx, mat_el in enumerate(sub_mats.findall("Material")):
         name = mat_el.get("Name", "material")
         shader = mat_el.get("Shader", "")
         if shader == "Nodraw":
+            xml_to_mat[xml_idx] = None
             continue
 
         diff_col = mat_el.get("Diffuse", "1,1,1")
@@ -252,9 +254,10 @@ def convert_materials(mtl_path, game_dirs, out_dir):
             gltf_mat["emissiveFactor"] = [1.0, 1.0, 1.0]
 
         materials.append(gltf_mat)
+        xml_to_mat[xml_idx] = len(materials) - 1
         mat_info.append({
             "name": name, "shininess": shininess, "diffuse": diff_col,
             "specular": spec_col, "opacity": opacity, "shader": shader,
         })
 
-    return materials, [img["name"] for img in sorted(images, key=lambda x: x["index"])], mat_info, tex_sources
+    return materials, [img["name"] for img in sorted(images, key=lambda x: x["index"])], mat_info, tex_sources, xml_to_mat

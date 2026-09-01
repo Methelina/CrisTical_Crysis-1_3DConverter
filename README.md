@@ -5,7 +5,7 @@ Uses `.cdf` (Character Definition File) as the root assembly point,
 merging the main model with all attachments into a single output.
 Also converts **static geometry** (`.cgf` vegetation, props) without a skeleton.
 
-Reads data from binary .chr/.cgf/.dba/.mtl files using CryEngine format specifications. No third-party converters required.
+Reads data from binary .chr/.cgf/.dba/.mtl files through independent analysis of the file formats. No third-party converters required.
 
 **Author:** Soror L.'.L.'. aka Methelina &nbsp;|&nbsp; **Version:** 2.1 &nbsp;|&nbsp; **License:** Apache 2.0
 
@@ -18,7 +18,7 @@ Reads data from binary .chr/.cgf/.dba/.mtl files using CryEngine format specific
 - **CDF assembly** — auto-merge Model + CA_SKIN Attachments into one glTF
 - **Skeleton** — full bone hierarchy with correct inverse-bind matrices
 - **Mesh** — all primitives with POSITION/NORMAL/UV/JOINTS/WEIGHTS
-- **Static CGF** — `cgf2gltf.py` reads skeleton-free geometry (Mesh/Node/DataStream/MeshSubsets chunks) with **vertex colors → COLOR_0** and **tangents → TANGENT** preserved (int16 SMeshTangents unpacked), node hierarchy baked into world space
+- **Static CGF** — `cgf2gltf.py` reads skeleton-free geometry (Mesh/Node/DataStream/MeshSubsets chunks) with **vertex colors → COLOR_0** and **tangents → TANGENT** preserved (packed int16 tangents unpacked), node hierarchy baked into world space
 - **Animations** — supports DBA v0903 (original) and v0905 (Remaster)
 - **Textures** — auto-convert DDS (DXT1/DXT5/ATI2N/3DC/RGBA8/L8) → PNG
 - **DDN normals** — Z-channel reconstruction, DDNA gloss extraction by suffix
@@ -32,6 +32,7 @@ Reads data from binary .chr/.cgf/.dba/.mtl files using CryEngine format specific
 - **GUI + CLI** — graphical control panel and full command-line mode
 - **Native file dialogs** — Browse/+ buttons open the OS picker (tkinter); the built-in dialog is only a fallback
 - **Auto-detect game root** — GUI finds game directory by walking up from .cdf
+- **MCP server** — `MCP_CrisTical_bridge.py` exposes the full pipeline as native MCP tools (Kilo Code, Claude, Cursor, ...): `cristical_convert`, `cristical_scan`, `cristical_list`, `cristical_version`
 - **Universal** — works with any Crysis 1 character or object
 
 ---
@@ -53,9 +54,10 @@ Run `Install_CrisTical.bat` once. The installer automatically downloads and sets
 
 - **uv** — the package manager used to provision the environment
 - **Python 3.11** — full uv-managed build (includes **tkinter** for the native OS file dialogs in the GUI)
-- Python libraries (pyassimp, numpy, pillow, bpy, dearpygui, trimesh, pygltflib) for 3D format processing
+- Python libraries from `requirements.txt` (pyassimp, numpy, pillow, bpy, dearpygui, trimesh, pygltflib + **mcp[cli]** for the MCP bridge)
 - Assimp 6.0.5 (assimp.dll)
 - 7-Zip (7za.exe) — for .dba extraction from Animations.pak
+- **MCP bridge check** — verifies that `scripts/MCP_CrisTical_bridge.py` imports cleanly (FastMCP ready)
 
 The installer is **idempotent** — re-running it skips already-installed parts and
 only rebuilds the venv when it is missing or outdated. All download caches live
@@ -80,6 +82,32 @@ Run_CrisTical.bat --cdf alien.cdf --gamedir "F:\Games\Crysis\Game" --split-anim 
 # Static geometry (vegetation, props) — vertex colors + tangents preserved
 Run_CrisTical.bat --cgf palm_tree_large_a.cgf --gamedir "F:\Games\Crysis_Remastered\Game"
 Run_CrisTical.bat --cgf bush.cgf --gamedir "F:\Games\Crysis\Game" --glb
+```
+
+### MCP Mode (native tools for AI clients)
+
+`scripts/MCP_CrisTical_bridge.py` is a FastMCP stdio server that replaces
+`Run_CrisTical.bat` for MCP-driven usage — the same dispatch, environment
+and pipeline, but as native tools with verbose reports. Humans keep the
+`.bat`; AI clients (Kilo Code, Claude, Cursor, ...) get the bridge.
+
+| Tool | Description |
+|------|-------------|
+| `cristical_convert` | Convert `.cdf`/`.chr`/`.cgf`/`.cga` → glTF/GLB; returns the executed command, full pipeline log, exit code, duration and the list of files written |
+| `cristical_scan` | Dry-run inspection: chunk versions, bone counts, mesh stats, materials, animations — no files written |
+| `cristical_list` | List conversion output files with sizes and mtimes |
+| `cristical_version` | Environment report: venv, scripts, Bin/ tools, mcp library |
+
+Registration in Kilo Code (`kilo.json`, `mcp` section):
+
+```json
+"cristical": {
+  "type": "local",
+  "command": ["K:\\work\\CrisTical_Crysis3DConverter\\cris_env\\Scripts\\python.exe",
+              "K:\\work\\CrisTical_Crysis3DConverter\\scripts\\MCP_CrisTical_bridge.py"],
+  "enabled": true,
+  "timeout": 600000
+}
 ```
 
 ---
@@ -142,8 +170,8 @@ Recommended order: **Remaster → original → unpacked content**.
 | `--glb` | Output as binary `.glb` instead of `.gltf`+`.bin` |
 | `--help` | Show help |
 
-For static `.cgf` conversion the vertex colors (COLOR_0) are the CryEngine
-`SMeshColor` RGBA bytes — same convention Crysis vegetation shaders use for
+For static `.cgf` conversion the vertex colors (COLOR_0) are the raw RGBA
+bytes stored per vertex — the convention used by Crysis vegetation data for
 detail bending (R=edge stiffness, G=leaf phase, B=branch stiffness, A=AO).
 
 ---
@@ -172,9 +200,9 @@ With `--split-anim`, each animation is placed in a `model_name_anims/` subdirect
 
 | File | Format | Versions |
 |------|--------|----------|
-| .cdf | Character Definition (XML) | CryEngine 1–3 |
-| .chr | CryTek chunk file | v0744, v0745 |
-| .cgf | Static CryTek chunk file (Mesh/Node/DataStream/MeshSubsets) | v0744, v0745 |
+| .cdf | Character Definition (XML) | Crysis 1 |
+| .chr | Crysis binary character chunk file | v0744, v0745 |
+| .cgf | Static chunk file (Mesh/Node/DataStream/MeshSubsets) | v0744, v0745 |
 | .dba | CryAnimation Database | v0903, v0905 |
 | .mtl | XML material | single/multi-material |
 | .dds | DirectDraw Surface (split/combined) | DXT1, DXT5, ATI2N/3DC, RGBA8, L8 |
@@ -188,12 +216,14 @@ With `--split-anim`, each animation is placed in a `model_name_anims/` subdirect
 CrisTical_Crysis3DConverter/
 ├── Install_CrisTical.bat          # Environment installer
 ├── Run_CrisTical.bat              # Launcher (GUI / CLI)
-├── README.md / README.ru.md       # Documentation
+├── requirements.txt               # Python dependencies (incl. mcp[cli])
+├── README.md / README.ru.md      # Documentation
 ├── scripts/
-│   ├── cristical_gui.py          # Control panel (DearPyGui)
+│   ├── cristorical_gui.py          # Control panel (DearPyGui)
 │   ├── cdf2gltf.py               # Conversion orchestrator (characters)
 │   ├── cgf2gltf.py               # Conversion orchestrator (static .cgf)
-│   └── cristical_core/           # Converter library
+│   ├── MCP_CrisTical_bridge.py   # MCP server (FastMCP): convert/scan/list/version tools
+│   └── cristorical_core/           # Converter library
 │       ├── crychr.py              # .chr/.cdf parser (CompiledBones, DataStream, CDF XML)
 │       ├── crycgf.py              # Static .cgf parser (Mesh/Node/MtlName/DataStream/MeshSubsets, COLORS stream)
 │       ├── crygltf.py             # glTF 2.0 writer (skeleton + mesh + static + COLOR_0 + TANGENT)

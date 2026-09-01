@@ -29,6 +29,8 @@ from cristical_core import (
     read_dba, has_tcb_controllers, read_dba_version,
     GltfAnimationInjector, convert_materials,
 )
+from cristical_core.mtl_resolve import resolve_mtl
+from cristical_core.crylmg import parse_lmg
 
 import argparse
 import json
@@ -97,23 +99,110 @@ def resolve_dba(dba_rel, game_dirs):
     return None
 
 
-def _resolve_mtl(chr_path, game_dirs):
-    mtl = os.path.splitext(chr_path)[0] + ".mtl"
-    if os.path.isfile(mtl):
-        return mtl
-    chr_base = os.path.splitext(os.path.basename(chr_path))[0].lower()
-    for gd in game_dirs:
-        for root, dirs, files in os.walk(gd):
-            for f in files:
-                if f.lower().endswith(".mtl"):
-                    if os.path.splitext(f)[0].lower() == chr_base:
-                        return os.path.join(root, f)
-    chr_dir = os.path.dirname(chr_path)
-    if os.path.isdir(chr_dir):
-        candidates = [f for f in os.listdir(chr_dir) if f.lower().endswith(".mtl")]
-        if candidates:
-            return os.path.join(chr_dir, candidates[0])
-    return mtl
+def collect_lmg_refs(chr_path, game_dirs):
+    """Collect locomotion-group (.lmg) references from the .chrparams next to a character.
+
+    The .chrparams XML holds an ``<Animation name="#filepath" path="...">`` entry
+    defining the animation root, plus ``<Animation name="..." path=".../*.lmg"/>``
+    entries whose path is resolved relative to that root and the game directory.
+
+    For each existing .lmg the file is parsed via :func:`parse_lmg`; broken
+    references are reported with ``file: None`` so callers can surface them.
+
+    Args:
+        chr_path: resolved path to the character .chr file.
+        game_dirs: list of candidate game-root directories.
+
+    Returns:
+        A dict ``{"source": <chrparams basename>, "filepath": <anim root>,
+        "groups": [...]}`` or ``None`` when no .chrparams file exists next to
+        ``chr_path``.
+    """
+    import xml.etree.ElementTree as ET
+
+    chrparams_path = os.path.splitext(chr_path)[0] + ".chrparams"
+    if not os.path.isfile(chrparams_path):
+        return None
+
+    source_name = os.path.basename(chrparams_path)
+    filepath_root = ""
+    raw_entries = []  # list of (anim_name, lmg_path)
+
+    try:
+        tree = ET.parse(chrparams_path)
+    except (ET.ParseError, OSError):
+        return None
+
+    root = tree.getroot()
+    anim_list = root.find(".//AnimationList")
+    if anim_list is not None:
+        animations = anim_list.findall("Animation")
+    else:
+        animations = root.findall(".//Animation")
+
+    for anim in animations:
+        name = anim.get("name", "")
+        path_attr = anim.get("path", "")
+        if name == "#filepath":
+            filepath_root = path_attr
+        elif path_attr:
+            m = re.search(r"\.[lL][mM][gG]", path_attr)
+            if m:
+                raw_entries.append((name, path_attr[:m.end()]))
+
+    game_root = None
+    for d in game_dirs:
+        if not os.path.isdir(d):
+            continue
+        if os.path.isdir(os.path.join(d, "Objects")) or os.path.isfile(os.path.join(d, "Animations.pak")):
+            game_root = d
+            break
+    if game_root is None and game_dirs:
+        game_root = game_dirs[0]
+
+    groups = []
+    for anim_name, lmg_path in raw_entries:
+        resolved = None
+        if game_root:
+            rel = (filepath_root + "/" + lmg_path).replace("\\", "/").lstrip("/")
+            loose = os.path.join(game_root, rel.replace("/", os.sep))
+            if os.path.isfile(loose):
+                resolved = loose
+
+        if resolved:
+            parsed = parse_lmg(resolved)
+            groups.append({
+                "anim_name": anim_name,
+                "file": resolved,
+                "blend_type": parsed["blend_type"],
+                "examples": parsed["examples"],
+                "joints": parsed["joints"],
+            })
+        else:
+            groups.append({
+                "anim_name": anim_name,
+                "file": None,
+                "blend_type": "",
+                "examples": [],
+                "joints": [],
+            })
+
+    return {
+        "source": source_name,
+        "filepath": filepath_root,
+        "groups": groups,
+    }
+
+
+def _resolve_mtl(chr_path, game_dirs, prim_materials=None, verbose=True, log=None):
+    """Find the best .mtl for a character model (.chr/.cdf).
+
+    Delegates to the shared resolver in cristical_core.mtl_resolve, which
+    scores candidates by sub-material name overlap with the primitives'
+    material names.
+    """
+    return resolve_mtl(chr_path, game_dirs, prim_materials=prim_materials,
+                       verbose=verbose, log=log or print)
 
 
 def _inject_all(gltf, buf, dba, out_dir):
@@ -246,14 +335,15 @@ def run_pipeline(input_path, game_dirs, out_gltf, do_anim=True, do_tex=True, spl
 
     if do_tex:
         L("[2/3] Materials + textures")
-        mtl_path = _resolve_mtl(chr_path, game_dirs)
+        prim_materials = [p.get("material") for p in mesh["primitives"]]
+        mtl_path = _resolve_mtl(chr_path, game_dirs, prim_materials)
         L("  MTL: %s" % mtl_path)
         all_pngs = []
         all_materials = []
         loaded_mtls = set()
 
         if os.path.isfile(mtl_path):
-            mats, pngs, mat_info, tex_sources = convert_materials(mtl_path, game_dirs, out_dir)
+            mats, pngs, mat_info, tex_sources, xml_to_mat = convert_materials(mtl_path, game_dirs, out_dir)
             loaded_mtls.add(os.path.normpath(mtl_path))
             if mats:
                 for mi in mat_info:
@@ -273,7 +363,7 @@ def run_pipeline(input_path, game_dirs, out_gltf, do_anim=True, do_tex=True, spl
                 if att_chr:
                     att_mtl = os.path.normpath(_resolve_mtl(att_chr, game_dirs))
                     if os.path.isfile(att_mtl) and att_mtl not in loaded_mtls:
-                        mats2, pngs2, _mi2, _ts2 = convert_materials(att_mtl, game_dirs, out_dir)
+                        mats2, pngs2, _mi2, _ts2, _xm2 = convert_materials(att_mtl, game_dirs, out_dir)
                         loaded_mtls.add(att_mtl)
                         if mats2:
                             all_materials.extend(mats2)
@@ -300,9 +390,29 @@ def run_pipeline(input_path, game_dirs, out_gltf, do_anim=True, do_tex=True, spl
                             t["index"] = tex_idx.get(png_basename, idx)
 
             prims = gltf["meshes"][0]["primitives"]
+            mat_names = [m.get("name", "") for m in all_materials]
             for pi, prim in enumerate(prims):
+                mat_name = prim.pop("_mat_name", "material")
                 mat_id = prim.pop("_mat_id", 0)
-                prim["material"] = min(int(mat_id), len(all_materials) - 1) if len(all_materials) > 0 else 0
+                # prefer exact name, then normalized, then prefix match
+                idx_m = next((i for i, n in enumerate(mat_names) if n == mat_name), None)
+                if idx_m is None:
+                    tn = "".join(ch.lower() for ch in mat_name if ch.isalnum())
+                    idx_m = next(
+                        (i for i, n in enumerate(mat_names)
+                         if "".join(ch.lower() for ch in n if ch.isalnum()) == tn), None)
+                if idx_m is None:
+                    tn = "".join(ch.lower() for ch in mat_name if ch.isalnum())
+                    idx_m = next(
+                        (i for i, n in enumerate(mat_names)
+                         if tn and (("".join(ch.lower() for ch in n if ch.isalnum())).startswith(tn)
+                                    or tn.startswith("".join(ch.lower() for ch in n if ch.isalnum())))), None)
+                # last resort: translate mat_id (XML index) through the Nodraw-aware mapping
+                if idx_m is None:
+                    mapped = xml_to_mat.get(mat_id)
+                    if mapped is not None and 0 <= mapped < len(mats):
+                        idx_m = mapped
+                prim["material"] = idx_m if idx_m is not None else 0
             L("  %d textures, %d materials" % (len(png_files), len(all_materials)))
         else:
             L("  no .mtl found, skipping")
@@ -331,6 +441,15 @@ def run_pipeline(input_path, game_dirs, out_gltf, do_anim=True, do_tex=True, spl
                 L("  DBA not found: %s" % dba_rel)
         else:
             L("  no .cal file found, skipping animations")
+
+    if do_anim:
+        lmg_result = collect_lmg_refs(chr_path, game_dirs)
+        if lmg_result and lmg_result.get("groups"):
+            lmg_name = os.path.splitext(os.path.basename(chr_path))[0] + "_locomotion.json"
+            lmg_out = os.path.join(out_dir, lmg_name)
+            with open(lmg_out, "w", encoding="utf-8") as lf:
+                json.dump(lmg_result, lf, indent=2, ensure_ascii=False)
+            L("  LMG: %d groups -> %s" % (len(lmg_result["groups"]), lmg_out))
 
     out_bin = out_gltf.replace(".gltf", ".bin")
     gltf["buffers"][0]["byteLength"] = len(buf)

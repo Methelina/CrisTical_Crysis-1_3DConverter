@@ -3,8 +3,8 @@ crydba.py — Crysis 1 DBA animation database reader (v0903/v0905 controller)
 Authors: Soror L.'.L.'. aka Methelina    Project: CrisTical
 Version: 1.0
 
-Format: CryTek chunk file, single ChunkType_Controller chunk.
-Based on CryEngine r312 source code.
+Format: Crysis binary chunk file, single ChunkType_Controller chunk.
+Layout determined by independent analysis of .dba sample files.
 """
 
 import math
@@ -376,7 +376,7 @@ def _read_anim_records_v905(dba, data, pos, num_anims):
 def read_dba(path):
     data = open(path, "rb").read()
     if data[:6] != b"CryTek":
-        raise ValueError("not a CryTek chunk file: %s" % path)
+        raise ValueError("not a Crysis binary chunk file: %s" % path)
 
     file_type, version, chunk_table_offset = struct.unpack_from("<III", data, 8)
     (num_chunks,) = struct.unpack_from("<I", data, 20)

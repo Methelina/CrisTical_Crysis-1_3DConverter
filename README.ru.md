@@ -15,7 +15,7 @@
 ## Возможности
 
 - **CDF-сборка** — автоматическое объединение Model + Attachments (CA_SKIN) в один glTF
-- **Статичный CGF** — `cgf2gltf.py` читает геометрию без скелета (чанки Mesh/Node/DataStream/MeshSubsets) с сохранением **вершинных цветов → COLOR_0** и **тангентов → TANGENT** (распаковка int16 SMeshTangents), иерархия нод запекается в мировое пространство
+- **Статичный CGF** — `cgf2gltf.py` читает геометрию без скелета (чанки Mesh/Node/DataStream/MeshSubsets) с сохранением **вершинных цветов → COLOR_0** и **тангентов → TANGENT** (распаковка упакованных int16-тангентов), иерархия нод запекается в мировое пространство
 - **Скелет** — полная иерархия костей с корректными инверсными bind-матрицами
 - **Меш** — все primitives с POSITION/NORMAL/UV/JOINTS/WEIGHTS
 - **Анимации** — поддержка DBA v0903 (оригинал) и v0905 (Remaster)
@@ -31,6 +31,7 @@
 - **GUI + CLI** — графическая панель управления и полноценный командный режим
 - **Нативные диалоги** — кнопки Browse/+ открывают системный выбор файлов/папок (tkinter); встроенный диалог используется только как запасной вариант
 - **Автоопределение папок** — GUI сам находит корень игры по структуре папок от .cdf
+- **MCP-сервер** — `MCP_CrisTical_bridge.py` открывает весь пайплайн как нативные MCP-инструменты (Kilo Code, Claude, Cursor, ...): `cristical_convert`, `cristical_scan`, `cristical_list`, `cristical_version`
 - **Универсальность** — работает с любыми персонажами и объектами Crysis 1
 
 ---
@@ -52,9 +53,10 @@
 
 - **uv** — менеджер пакетов, через который подготавливается окружение
 - **Python 3.11** — полноценная uv-managed сборка (включает **tkinter** для нативных системных диалогов выбора файлов в GUI)
-- Python-библиотеки (pyassimp, numpy, pillow, bpy, dearpygui, trimesh, pygltflib)
+- Python-библиотеки из `requirements.txt` (pyassimp, numpy, pillow, bpy, dearpygui, trimesh, pygltflib + **mcp[cli]** для MCP-бриджа)
 - Assimp 6.0.5 (assimp.dll) — для работы с 3D-форматами
 - 7-Zip (7za.exe) — для извлечения .dba из Animations.pak
+- **Проверка MCP-бриджа** — установка заверяется, что `scripts/MCP_CrisTical_bridge.py` импортируется без ошибок (FastMCP готов к работе)
 
 Установщик **идемпотентен** — при повторном запуске уже установленные части
 пропускаются, а venv пересоздаётся только если его нет или он устарел. Все кэши
@@ -75,6 +77,33 @@ Run_CrisTical.bat
 ```batch
 Run_CrisTical.bat --cdf alien.cdf --gamedir "F:\Games\Crysis\Game" --out output
 Run_CrisTical.bat --cdf alien.cdf --gamedir "F:\Games\Crysis\Game" --split-anim --glb
+```
+
+### MCP-режим (нативные инструменты для AI-клиентов)
+
+`scripts/MCP_CrisTical_bridge.py` — FastMCP stdio-сервер, который заменяет
+`Run_CrisTical.bat` при работе через MCP: та же диспетчеризация, то же окружение
+и тот же пайплайн, но в виде нативных инструментов с подробными отчётами.
+Человек продолжает пользоваться `.bat`; AI-клиенты (Kilo Code, Claude, Cursor, ...)
+работают через бридж.
+
+| Инструмент | Описание |
+|------|-------------|
+| `cristical_convert` | Конвертация `.cdf`/`.chr`/`.cgf`/`.cga` → glTF/GLB; возвращает выполненную команду, полный лог пайплайна, код выхода, время работы и список созданных файлов |
+| `cristical_scan` | Осмотр без конвертации: версии чанков, количество костей, статистика меша, материалы, анимации — файлы не записываются |
+| `cristical_list` | Список файлов вывода с размерами и временем изменения |
+| `cristical_version` | Отчёт об окружении: venv, скрипты, утилиты Bin/, версия mcp |
+
+Регистрация в Kilo Code (`kilo.json`, секция `mcp`):
+
+```json
+"cristical": {
+  "type": "local",
+  "command": ["K:\\work\\CrisTical_Crysis3DConverter\\cris_env\\Scripts\\python.exe",
+              "K:\\work\\CrisTical_Crysis3DConverter\\scripts\\MCP_CrisTical_bridge.py"],
+  "enabled": true,
+  "timeout": 600000
+}
 ```
 
 ---
@@ -105,10 +134,10 @@ Run_CrisTical.bat --cgf bush.cgf --gamedir "F:\Games\Crysis\Game" --glb
 
 Особенности:
 
-- **Вершинные цвета сохраняются** — `COLOR_0` (RGBA 0..1). Это те же байты `SMeshColor`, что использует шейдер растительности Crysis для detail bending: R=жёсткость края листа, G=фаза листа, B=жёсткость ветки, A=ambient occlusion.
-- **Тангенсы распаковываются** из упакованного формата `Vec4sf` (int16, f*32767).
-- **Мульти-материалы** — `mat_id` субмеша резолвится через `subMaterials` материала ноды (как в движке), с fallback по имени.
-- Формат прочитан из исходников движка: `CGFLoader.cpp` / `CryHeaders.h` (чанки Mesh 0xCCCC0000, Node 0xCCCC000B, MtlName 0xCCCC0014, DataStream 0xCCCC0016, MeshSubsets 0xCCCC0017).
+- **Вершинные цвета сохраняются** — `COLOR_0` (RGBA 0..1). Это исходные RGBA-байты на вершину — та же конвенция, что используется в данных растительности Crysis для detail bending: R=жёсткость края листа, G=фаза листа, B=жёсткость ветки, A=ambient occlusion.
+- **Тангенсы распаковываются** из упакованного формата (int16, f*32767).
+- **Мульти-материалы** — `mat_id` субмеша резолвится через `subMaterials` материала ноды, с fallback по имени.
+- Раскладка чанков определена самостоятельным анализом образцов файлов: Mesh 0xCCCC0000, Node 0xCCCC000B, MtlName 0xCCCC0014, DataStream 0xCCCC0016, MeshSubsets 0xCCCC0017.
 
 ---
 
@@ -181,9 +210,10 @@ output/
 
 | Файл | Формат | Версии |
 |------|--------|--------|
-| .cdf | Character Definition (XML) | CryEngine 1–3 |
-| .chr | CryTek chunk file | v0744, v0745 |
-| .dba | CryAnimation Database | v0903, v0905 |
+| .cdf | Character Definition (XML) | Crysis 1 |
+| .chr | Бинарный формат персонажа Crysis (чанки) | v0744, v0745 |
+| .cgf | Статичный формат Crysis (Mesh/Node/DataStream/MeshSubsets) | v0744, v0745 |
+| .dba | База анимаций Crysis | v0903, v0905 |
 | .mtl | XML материал | одно-/много-материальный |
 | .dds | DirectDraw Surface (split/combined) | DXT1, DXT5, ATI2N/3DC, RGBA8, L8 |
 | .cal | Character Animation List | текстовый |
@@ -196,12 +226,14 @@ output/
 CrisTical_Crysis3DConverter/
 ├── Install_CrisTical.bat          # Установщик окружения
 ├── Run_CrisTical.bat              # Лаунчер (GUI / CLI)
+├── requirements.txt               # Python-зависимости (включая mcp[cli])
 ├── README.md / README.ru.md       # Документация
 ├── scripts/
-│   ├── cristical_gui.py          # Панель управления (DearPyGui)
+│   ├── cristorical_gui.py          # Панель управления (DearPyGui)
 │   ├── cdf2gltf.py               # Оркестратор конвертации (персонажи)
 │   ├── cgf2gltf.py               # Оркестратор конвертации (статичный .cgf)
-│   └── cristical_core/           # Библиотека конвертера
+│   ├── MCP_CrisTical_bridge.py   # MCP-сервер (FastMCP): convert/scan/list/version
+│   └── cristorical_core/           # Библиотека конвертера
 │       ├── crychr.py              # Парсер .chr/.cdf (CompiledBones, DataStream, CDF XML)
 │       ├── crycgf.py              # Парсер статичного .cgf (Mesh/Node/MtlName/DataStream/MeshSubsets, стрим COLORS)
 │       ├── crygltf.py             # glTF 2.0 writer (скелет + меш + статика + COLOR_0 + TANGENT)

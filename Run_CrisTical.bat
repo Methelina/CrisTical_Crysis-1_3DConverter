@@ -64,8 +64,10 @@ shift
 goto :collect_args
 
 :run_cli
-REM ---- pick converter by flag: --cgf -> static, --cdf -> character ----
+REM ---- pick converter by flag: --cga -> animated geometry, --cgf -> static, --cdf -> character ----
 set "CLI_SCRIPT=%SCRIPTS_DIR%\cdf2gltf.py"
+echo !ARGS! | findstr /I /C:"--cga" >nul
+if not errorlevel 1 set "CLI_SCRIPT=%SCRIPTS_DIR%\cga2gltf.py"
 echo !ARGS! | findstr /I /C:"--cgf" >nul
 if not errorlevel 1 set "CLI_SCRIPT=%SCRIPTS_DIR%\cgf2gltf.py"
 echo [INFO] Running: %CLI_SCRIPT% !ARGS!
@@ -75,17 +77,19 @@ exit /b %ERRORLEVEL%
 
 :show_help
 echo.
-echo CrisTical Crysis3D Converter - CDF/CHR/CGF to glTF
+echo CrisTical Crysis3D Converter - CDF/CHR/CGF/CGA to glTF
 echo ==================================================
 echo.
 echo USAGE:
 echo   Run_CrisTical.bat                                  (GUI mode)
 echo   Run_CrisTical.bat --cdf file --gamedir dir [...]   (animated character)
 echo   Run_CrisTical.bat --cgf file --gamedir dir [...]   (static geometry)
+echo   Run_CrisTical.bat --cga file --gamedir dir [...]   (animated geometry)
 echo.
 echo CLI OPTIONS:
 echo   --cdf ^<path^>         Path to .cdf or .chr character file
 echo   --cgf ^<path^>         Path to static .cgf file (vegetation, props)
+echo   --cga ^<path^>         Path to animated .cga/.anm file
 echo   --gamedir ^<dir^>      Game root directory (repeatable: -g d1 -g d2)
 echo   --out ^<path^>         Output .gltf path (default: auto)
 echo   --no-anim              Skip animation injection (characters)
@@ -98,6 +102,7 @@ echo   Run_CrisTical.bat
 echo   Run_CrisTical.bat --cdf alien.cdf -g "F:\Crysis\Game"
 echo   Run_CrisTical.bat --cgf palm.cgf -g "F:\Crysis_Remastered\Game"
 echo   Run_CrisTical.bat --cgf palm.cgf -g "F:\Crysis_Remastered\Game" --glb
+echo   Run_CrisTical.bat --cga us_tank.cga -g "F:\Crysis_Remastered\Game"
 echo.
 pause
 exit /b 0

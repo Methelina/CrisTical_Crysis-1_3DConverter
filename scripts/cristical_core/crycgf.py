@@ -2,19 +2,19 @@
 # -*- coding: utf-8 -*-
 
 """
-crycgf.py — Static CryTek chunk file (.cgf) reader for static geometry
+crycgf.py — Static Crysis binary chunk file (.cgf) reader for static geometry
 Authors: Soror L.'.L.'. aka Methelina    Project: CrisTical
 Version: 1.0
 
-Reads compiled static geometry CGF (CryEngine 1/2, incl. Crysis Remastered)
-the same way the engine does (CGFLoader.cpp / CryHeaders.h):
+Reads compiled static geometry CGF (Crysis 1 / Remastered) — chunk
+layout determined by independent analysis of sample files:
 
   - chunk table entry width 16 (0x0744) or 20 (0x0745, aligned)
-  - ChunkType_Mesh           0xCCCC0000  (MESH_CHUNK_DESC_0800, streams referenced by id)
-  - ChunkType_Node           0xCCCC000B  (NODE_CHUNK_DESC_0823, parent/child, localTM)
-  - ChunkType_MtlName        0xCCCC0014  (MTL_NAME_CHUNK_DESC_0800)
-  - ChunkType_DataStream     0xCCCC0016  (STREAM_DATA_CHUNK_DESC_0800)
-  - ChunkType_MeshSubsets    0xCCCC0017  (MESH_SUBSETS_CHUNK_DESC_0800)
+  - ChunkType_Mesh           0xCCCC0000  (mesh desc, streams referenced by id)
+  - ChunkType_Node           0xCCCC000B  (node desc, parent/child, localTM)
+  - ChunkType_MtlName        0xCCCC0014
+  - ChunkType_DataStream     0xCCCC0016
+  - ChunkType_MeshSubsets    0xCCCC0017
   - ChunkType_ExportFlags    0xCCCC0013
 
 Streams (ECgfStreamType): POSITIONS=0, NORMALS=1, TEXCOORDS=2,
@@ -37,7 +37,7 @@ import os
 import struct
 
 # ---------------------------------------------------------------------------
-# Chunk type constants (CryHeaders.h)
+# Chunk type constants
 # ---------------------------------------------------------------------------
 CC_ExportFlags    = 0xCCCC0013
 CC_MtlName        = 0xCCCC0014
@@ -62,7 +62,7 @@ STREAM_TANGENTS  = 6
 def _chunk_table(raw):
     sig = raw[:6]
     if sig != b"CryTek":
-        raise ValueError("not a CryTek chunk file")
+        raise ValueError("not a Crysis binary chunk file")
     ft, fv, cto, nch = struct.unpack_from("<IIII", raw, 8)
     entry = 20 if fv == 0x0745 else 16
     chunks = []
@@ -124,8 +124,8 @@ def _read_subsets(raw, chunks, subsets_chunk_id):
 def _read_material_names(raw, chunks):
     """Return material records from MtlName chunks (incl. sub-material chunk ids).
 
-    Mirrors MTL_NAME_CHUNK_DESC_0800: root multi-material (FLAG_MULTI_MATERIAL=0x1)
-    lists its sub-materials in nSubMatChunkId[32] at +160. Mesh subset mat_id
+    Root multi-material records (FLAG_MULTI_MATERIAL=0x1)
+    list their sub-materials in nSubMatChunkId[32] at +160. Mesh subset mat_id
     indexes into the NODE's material subMaterials, so the whole graph is kept.
     """
     names = {}
@@ -148,9 +148,8 @@ def _read_material_names(raw, chunks):
 def _resolve_subset_material(materials, node, subset_mat_id):
     """Map subset.mat_id -> material name via the node's material subMaterials.
 
-    Engine: subset.nMatID indexes into node material's subMaterials list
-    (CGFLoader.cpp SetupMeshSubsets). Falls back to flat name when the node's
-    material has no sub-materials.
+    subset.nMatID indexes into the node material's subMaterials list.
+    Falls back to the flat name when the node's material has no sub-materials.
     """
     node_mat = materials.get(node.get("mat_id"))
     if node_mat is None:
@@ -169,7 +168,7 @@ def _resolve_subset_material(materials, node, subset_mat_id):
 # ---------------------------------------------------------------------------
 
 def _read_mesh(raw, chunks, mesh_chunk):
-    """Read a compiled mesh chunk (MESH_CHUNK_DESC_0800) + its streams."""
+    """Read a compiled mesh chunk + its referenced streams."""
     o = mesh_chunk["offset"]
     nFlags  = struct.unpack_from("<i", raw, o + 16)[0]
     nFlags2 = struct.unpack_from("<i", raw, o + 20)[0]
@@ -222,7 +221,7 @@ def _read_mesh(raw, chunks, mesh_chunk):
     if STREAM_TANGENTS in streams:
         _, cnt, esz, data = streams[STREAM_TANGENTS]
         for i in range(cnt):
-            # SMeshTangents { Vec4sf Tangent; Vec4sf Binormal; } — 2x int16f(4 shorts)
+            # packed tangent + binormal: 2x (4 int16 shorts, value/32767)
             t0, t1, t2, t3, b0, b1, b2, b3 = struct.unpack_from("<8h", data, i * esz)
             tangents.append(({
                 "tangent": (t0 / 32767.0, t1 / 32767.0, t2 / 32767.0, t3 / 32767.0),
@@ -238,7 +237,7 @@ def _read_mesh(raw, chunks, mesh_chunk):
 
 
 # ---------------------------------------------------------------------------
-# Node transforms (NODE_CHUNK_DESC_0823)
+# Node transforms (node chunk v0823)
 # ---------------------------------------------------------------------------
 
 def _read_nodes(raw, chunks):
@@ -425,7 +424,7 @@ def read_cgf_meshes(path):
 
     Each primitive has: positions, normals, uvs, colors (RGBA floats), tangents,
     indices, mat_id, node_name. Positions/normals are in the node's world space
-    (parent chain applied), matching how the engine draws the object.
+    (parent chain applied), matching how the object is positioned in-game.
     """
     data = read_cgf(path)
     nodes = data["nodes"]

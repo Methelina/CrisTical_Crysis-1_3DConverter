@@ -148,10 +148,16 @@ def _build_cli_preview():
     anim_mode = dpg.get_value(ANIM_MODE_COMBO)
     tex_mode  = dpg.get_value(TEX_MODE_COMBO)
     is_cgf = cdf.lower().endswith(".cgf")
+    is_cga = cdf.lower().endswith(".cga")
 
     parts = []
     if cdf:
-        parts.append('--cgf "%s"' % cdf if is_cgf else '--cdf "%s"' % cdf)
+        if is_cgf:
+            parts.append('--cgf "%s"' % cdf)
+        elif is_cga:
+            parts.append('--cga "%s"' % cdf)
+        else:
+            parts.append('--cdf "%s"' % cdf)
     game_dirs_to_show = list(_game_dirs) if _game_dirs else ([_auto_game_root] if _auto_game_root else [])
     for gd in game_dirs_to_show:
         parts.append('--gamedir "%s"' % gd)
@@ -348,6 +354,119 @@ def _read_cdf_version(file_path):
     return None
 
 
+def _detect_file_type(file_path):
+    """Определяет реальный тип файла по структуре чанков.
+    Возвращает: 'cdf', 'chr', 'cgf', 'cga' или None."""
+    try:
+        with open(file_path, "rb") as f:
+            raw = f.read(8192)  # читаем заголовок и таблицу чанков
+    except OSError:
+        return None
+
+    if len(raw) < 24:
+        return None
+
+    # Проверка сигнатуры чанка (первые 6 байт файла)
+    if raw[:6] != b"CryTek":
+        return None
+
+    import struct
+    ft, fv, cto, nch = struct.unpack_from("<IIII", raw, 8)
+    
+    # Проверяем валидность таблицы чанков
+    if cto + 4 > len(raw) or nch > 10000:
+        return None
+    
+    entry_size = 20 if fv == 0x0745 else 16
+    if cto + 4 + nch * entry_size > len(raw):
+        return None
+
+    # Читаем таблицу чанков
+    chunks = []
+    for i in range(min(nch, 500)):  # ограничиваем для производительности
+        off = cto + 4 + i * (20 if fv == 0x0745 else 16)
+        if off + 16 > len(raw):
+            break
+        t, v, o, cid = struct.unpack_from("<IIII", raw, off)
+        chunks.append((t, v, o, cid))
+
+    # Определяем наличие ключевых чанков
+    has_compiled_bones = any(t == 0xACDC0000 for t, v, o, cid in chunks)
+    has_mesh = any(t == 0xCCCC0000 for t, v, o, cid in chunks)
+    has_node = any(t == 0xCCCC000B for t, v, o, cid in chunks)
+    has_controller = any(t == 0xCCCC000D for t, v, o, cid in chunks)  # TCB controller
+    has_mtlname = any(t == 0xCCCC0014 for t, v, o, cid in chunks)
+
+    # CHR/CDF (персонажи) — имеют CompiledBones чанк (0xACDC0000)
+    if any(t == 0xACDC0000 for t, v, o, cid in chunks):
+        # Если есть XML внутри — это CDF, иначе CHR
+        if b"<" in raw and b">" in raw:
+            return "cdf"
+        return "chr"
+    
+    # CGA (анимационная геометрия) — имеет TCB контроллеры (0xCCCC000D) и Mesh/MtlName,
+    # но НЕТ CompiledBones
+    if any(t == 0xCCCC000D for t, v, o, cid in chunks) and not any(t == 0xACDC0000 for t, v, o, cid in chunks):
+        return "cga"
+    
+    # Статический CGF — имеет Mesh (0xCCCC0000) и Node (0xCCCC000B) чанки,
+    # НЕТ CompiledBones, НЕТ TCB контроллеров
+    if any(t == 0xCCCC0000 for t, v, o, cid in chunks) and any(t == 0xCCCC000B for t, v, o, cid in chunks):
+        return "cgf"
+    
+    return None
+
+    if len(raw) < 24:
+        return None
+
+    # Проверка сигнатуры чанка (первые 6 байт файла)
+    if raw[:6] != b"CryTek":
+        return None
+
+    import struct
+    ft, fv, cto, nch = struct.unpack_from("<IIII", raw, 8)
+    
+    # Проверяем валидность таблицы чанков
+    if cto + 4 > len(raw) or nch > 1000:
+        return None
+    
+    entry_size = 20 if fv == 0x0745 else 16
+    if cto + 4 + nch * entry_size > len(raw):
+        return None
+
+    # Читаем таблицу чанков
+    chunks = []
+    for i in range(nch):
+        off = cto + 4 + i * (20 if fv == 0x0745 else 16)
+        if off + 16 > len(raw):
+            break
+        t, v, o, cid = struct.unpack_from("<IIII", raw, off)
+        chunks.append((t, v, o, cid))
+
+    # Определяем тип по чанкам
+    has_compiled_bones = any(t == 0xACDC0000 for t, v, o, cid in chunks)
+    has_mesh = any(t == 0xCCCC0000 for t, v, o, cid in chunks)
+    has_node = any(t == 0xCCCC000B for t, v, o, cid in chunks)
+    has_compiled_morphtargets = any(t == 0xACDC0002 for t, v, o, cid in chunks)
+
+    # CGA файлы имеют свой формат (проверяем по расширению)
+    # Они могут не иметь чанк-заголовка или иметь другой формат
+    
+    # CHR/CDF (персонажи) — имеют CompiledBones чанк
+    if any(t == 0xACDC0000 for t, v, o, cid in chunks):
+        # Если есть XML внутри — это CDF, иначе CHR
+        # Проверяем наличие XML в файле (после заголовка)
+        if b"<" in raw and b">" in raw:
+            return "cdf"
+        return "chr"
+    
+    # Статический CGF — имеет Mesh и Node чанки, но нет CompiledBones
+    if has_mesh and has_node and not any(t == 0xACDC0000 for t, v, o, cid in chunks):
+        return "cgf"
+    
+    return None
+
+
 def _validate_game_dirs(game_dirs):
     if not game_dirs:
         return (110, 110, 110), "No directories"
@@ -491,6 +610,86 @@ def _file_callback(sender, app_data):
 # ===================================================================
 #  Model scanner
 # ===================================================================
+#  Helper: character scan processing
+# ===================================================================
+
+def _process_character_scan(cdf_path, data, chr_path, att_count, game_dirs, mtl_count, mtl_path, fmt_ver, ct, dpg, SCAN_LABEL, DETECT_LABEL, set_status):
+    """Обрабатывает сканирование персонажа (CHR/CDF) и обновляет UI."""
+    bones = data["skeleton"]
+    mesh = data["mesh"]
+    prim_count = len(mesh["primitives"])
+
+    mtl_count = 0
+    mtl_path = _cdf_resolve_mtl(chr_path, game_dirs,
+                                [p.get("material") for p in mesh["primitives"]],
+                                log=ct)
+    if mtl_path and os.path.isfile(mtl_path):
+        import xml.etree.ElementTree as ET2
+        try:
+            tree = ET2.parse(mtl_path)
+            root = tree.getroot()
+            sub = root.find("SubMaterials")
+            mtl_count = len(sub.findall("Material")) if sub is not None else (
+                1 if root.tag == "Material" else 0)
+        except Exception:
+            pass
+
+    anim_info = ""
+    dba_ver = None
+    cal_path = os.path.splitext(chr_path)[0] + ".cal"
+    if os.path.isfile(cal_path):
+        cal = parse_cal(cal_path)
+        dba_rel = cal.get("TracksDatabase", "")
+        if dba_rel:
+            if not dba_rel.lower().endswith(".dba"):
+                dba_rel += ".dba"
+            if game_dirs:
+                dba_test = resolve_dba(dba_rel, game_dirs)
+                if dba_test:
+                    dba_ver = read_dba_version(dba_test)
+                    from cristical_core import read_dba as rd
+                    try:
+                        d = rd(dba_test)
+                        anim_info = ("%d animations in %s"
+                                     % (len(d.animations), os.path.basename(dba_test)))
+                    except Exception:
+                        anim_info = "detected (%s)" % dba_rel
+                else:
+                    anim_info = "DBA not found (%s)" % dba_rel
+            else:
+                anim_info = "%s (add game dir to verify)" % dba_rel
+        else:
+            anim_info = "none"
+    else:
+        anim_info = "no .cal file"
+
+    lmg_info = "none"
+    lmg_result = collect_lmg_refs(chr_path, game_dirs)
+    if lmg_result and lmg_result.get("groups"):
+        lmg_info = "%d groups" % len(lmg_result["groups"])
+        ct("Scan", "  LMG: %d groups (%s)" % (len(lmg_result["groups"]), lmg_result["source"]))
+    else:
+        ct("Scan", "  LMG: none")
+
+    scan_text = ("Bones: %d   Primitives: %d   Attachments: %d"
+                 % (len(bones), prim_count, att_count))
+    detect_text = "Materials: %d   Animations: %s   LMG: %s" % (mtl_count, anim_info, lmg_info)
+    dpg.set_value(SCAN_LABEL, scan_text)
+    dpg.set_value(DETECT_LABEL, detect_text)
+    ct("Scan", scan_text)
+    ct("Scan", detect_text)
+
+    if dba_ver:
+        set_status((80, 210, 100), "Valid (%s)" % dba_ver)
+    elif fmt_ver:
+        set_status((80, 210, 100), "Valid (%s)" % fmt_ver)
+    else:
+        set_status((80, 210, 100), "Valid (Unknown)")
+
+
+# ===================================================================
+#  Model scanner
+# ===================================================================
 
 def scan_model():
     cdf_path = dpg.get_value(CDF_INPUT).strip().strip('"')
@@ -528,6 +727,42 @@ def scan_model():
         if not game_dirs:
             ct("GUI", "WARN: No game directories — material/animation search limited")
 
+        # Определяем реальный тип файла по содержимому
+        real_type = _detect_file_type(cdf_path)
+        ext = cdf_path.lower().split('.')[-1]
+        
+        # CGA файлы определяются по расширению (у них свой формат)
+        if cdf_path.lower().endswith(".cga"):
+            from cristical_core import read_cga
+            data = read_cga(cdf_path)
+            ct("Scan", "Animated .cga   Nodes: %d   Primitives: %d" % (data["num_nodes"], data["num_prims"]))
+            dpg.set_value(SCAN_LABEL, "Animated .cga   Nodes: %d   Primitives: %d" % (data["num_nodes"], data["num_prims"]))
+            dpg.set_value(DETECT_LABEL, "Animated geometry (auto-finds sibling .anm)")
+            set_status((80, 210, 100), "Valid (CGA)")
+            return
+
+        # Если файл .cgf по расширению, но содержимое — чанк CHR/CDF
+        if cdf_path.lower().endswith(".cgf") and real_type in ("chr", "cdf"):
+            ct("GUI", "INFO: File has .cgf extension but content is %s — treating as character" % real_type.upper())
+            # Обрабатываем как персонаж
+            data = read_chr_or_cdf(cdf_path)
+            bones = data["skeleton"]
+            mesh = data["mesh"]
+            prim_count = len(mesh["primitives"])
+
+            chr_path = cdf_path
+            if real_type == "cdf":
+                cdf_info = read_cdf(cdf_path)
+                att_count = len(cdf_info.get("skin_attachments", []))
+                if cdf_info.get("model_path"):
+                    chr_path = cdf_info["model_path"]
+            else:
+                att_count = 0
+
+            _process_character_scan(cdf_path, data, chr_path, att_count, game_dirs, fmt_ver, ct, dpg, SCAN_LABEL, DETECT_LABEL, set_status)
+            return
+
+        # Обычный статический CGF
         is_cgf = cdf_path.lower().endswith(".cgf")
         if is_cgf:
             data = read_cgf(cdf_path)
@@ -679,6 +914,7 @@ def run_conversion():
     ct("GUI", "Output file: %s" % out_gltf)
     ct("GUI", "CLI equivalent: " + dpg.get_value(CLI_LABEL))
 
+    is_cga = cdf_path.lower().endswith(".cga")
     is_cgf = cdf_path.lower().endswith(".cgf")
 
     def _run():
@@ -687,7 +923,11 @@ def run_conversion():
         _q.put(("running", True))
         set_status((240, 200, 60), "RUNNING")
         try:
-            if is_cgf:
+            if is_cga:
+                run_cga_pipeline(cdf_path, game_dirs, out_gltf,
+                                 do_anim=do_anim, do_tex=do_tex,
+                                 progress_cb=lambda msg: ct("Pipeline", msg))
+            elif is_cgf:
                 run_cgf_pipeline(cdf_path, game_dirs, out_gltf,
                                  do_tex=do_tex, glb=use_glb,
                                  progress_cb=lambda msg: ct("Pipeline", msg))

@@ -8,8 +8,11 @@ Version: 2.0
 """
 
 from .crychr import read_chr, read_chr_or_cdf, read_cdf
+from .crylmg import parse_lmg
 from .crycgf import read_cgf, read_cgf_meshes
+from .crycga import read_cga, read_anm, anm_to_dba
 from .crygltf import export_gltf, export_gltf_static
 from .crydba import read_dba, has_tcb_controllers, read_dba_version
+from .crytcb import parse_controller_chunk_0826, decode_tcb_keys
 from .gltf_anim import GltfAnimationInjector
 from .tex_convert import convert_materials
