@@ -378,6 +378,15 @@ def _bone_attachment_prims(bones, bone_idx, cgf_real, bind_q, bind_pos, att_name
         # the authoritative CompiledBone b2w (world_transform_matrix) translation
         # — a hand recomputation of the local chain is unreliable for C2 rigs.
         # Skinning weight-1 then reproduces joint_anim * bind^-1.
+        #
+        # WARNING (bug history 2026-09-03): do NOT "correct" these units to
+        # centimetres. CA_BONE .cgf pieces (C1 Remaster/original, C2) are authored
+        # in the rig's OWN units (same frame as the skinned body). Scaling the
+        # bind translation (bind_scale) or the authored vertices (vert_scale) by
+        # 0.01 shrank every attachment ~100x into microscopic fragments ("a swarm
+        # of flies under the model"). Keep bind_scale=vert_scale=1.0 here; only a
+        # caller that has verified the asset is genuinely centimetre-authored may
+        # pass a different value.
         try:
             _b2w = bones[bone_idx]["b2w"]
             anchor_p = (_b2w[3] * bind_scale, _b2w[7] * bind_scale,
@@ -404,14 +413,9 @@ def _bone_attachment_prims(bones, bone_idx, cgf_real, bind_q, bind_pos, att_name
                 xs = [v[0] for v in pos]
                 ys = [v[1] for v in pos]
                 zs = [v[2] for v in pos]
-                minx, maxx = min(xs), max(xs)
-                miny, maxy = min(ys), max(ys)
-                minz, maxz = min(zs), max(zs)
-                log("  PRIMITIVE: att=%s, mode=%s, verts=%d, bbox=[(%f,%f,%f),(%f,%f,%f)]" % (att_name, "lift" if do_lift else "raw", len(pos), minx, miny, minz, maxx, maxy, maxz))
-                # Also log anchor_p and first vertex for first primitive of this attachment
-                if len(pos) > 0 and hasattr(self, '_debug_logged_att') and self._debug_logged_att != att_name:
-                    # Avoid spamming: log only first primitive per attachment
-                    pass
+                log("  PRIMITIVE: att=%s, mode=%s, verts=%d, bbox=[(%f,%f,%f),(%f,%f,%f)]" % (
+                    att_name, "lift" if do_lift else "raw", len(pos),
+                    min(xs), min(ys), min(zs), max(xs), max(ys), max(zs)))
             joints = [[bone_idx, 0, 0, 0]] * len(p["positions"])
             weights = [[1.0, 0.0, 0.0, 0.0]] * len(p["positions"])
             prims.append({
@@ -1120,14 +1124,15 @@ def run_pipeline(input_path, game_dirs, out_gltf, do_anim=True, do_tex=True, spl
                     continue
                 bind_q = _quat_wxyz(att.get("rotation"))
                 bind_pos = _vec3(att.get("position"))
-                # C1-family CompiledBone b2w is stored in cm (ReadCompiledBones
-                # copies m_DefaultB2W unscaled) and the authored .cgf verts are in
-                # cm, while the body mesh is metres — scale both to metres (×0.01)
-                # for C1 so attachments land on the (metre) body.
-                _c1 = _title in (GameTitle.CRYSIS_1, GameTitle.CRYSIS_WARHEAD,
-                                  GameTitle.CRYSIS_WARS, GameTitle.CRYSIS_REMASTERED)
-                _bscale = 0.01 if (_c1 and _frame == "lift") else 1.0
-                _vscale = 0.01 if _c1 else 1.0
+                # C1 CA_BONE pieces are authored in the rig's OWN units (same as
+                # the skinned body), NOT in centimetres — never apply a 0.01
+                # scale here. Bug history (2026-09-03): a wrong ×0.01 shrank every
+                # C1 attachment to ~1% (a "swarm of microscopic flies" under the
+                # hunter) because the rig units were misread as cm. bind_scale and
+                # vert_scale MUST stay 1.0 for C1; C2 uses the same lift path with
+                # 1.0, C3 is raw. Game tactics are divided by game_profile.
+                _bscale = 1.0
+                _vscale = 1.0
                 newp = _bone_attachment_prims(
                     bones, bi, cgf_real, bind_q, bind_pos, attname,
                     mode=_frame, log=L, bind_scale=_bscale, vert_scale=_vscale)
