@@ -24,6 +24,14 @@ docs/internal/
 
 scripts/_temp/
 
+# Local-only dev artifacts: standalone test scripts and Java
+# reverse-engineering leftovers (extracted JAR classes) - kept on
+# the dev machine, never pushed to GitHub
+tests/
+META-INF/
+org/
+pw/
+
 # Cache
 .cache/
 

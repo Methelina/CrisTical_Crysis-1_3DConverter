@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-tex_convert.py — Crysis material/texture converter (MTL -> PNG + glTF materials)
+tex_convert.py — CrisTical: material/texture converter (MTL -> PNG + glTF materials)
 Authors: Soror L.'.L.'. aka Methelina    Project: CrisTical
 Version: 1.0
 """
@@ -25,6 +25,28 @@ def _project_temp():
 import xml.etree.ElementTree as ET
 from PIL import Image
 import numpy as np
+
+try:
+    from .cryvfs import IPackFileSystem, mount_layers, materialize, mount_game, index_open_bytes
+    from .cryxmlb import load_file as _load_xml
+except ImportError:  # running as a script (python tex_convert.py)
+    from cryvfs import IPackFileSystem, mount_layers, materialize, mount_game, index_open_bytes
+    from cryxmlb import load_file as _load_xml
+
+
+_VFS_LAYERS_CACHE = {}
+_TEMP_TEX = os.path.join(os.path.dirname(os.path.dirname(_TEMP_DIR)), "temp", "tex_vfs")
+
+
+def _get_layers(game_dirs):
+    """Memoized per-root VFS layers (loose first, then paks). Empty list when no dirs."""
+    key = tuple(str(d) for d in game_dirs)
+    cached = _VFS_LAYERS_CACHE.get(key)
+    if cached is not None:
+        return cached
+    layers = mount_layers([str(d) for d in game_dirs]) if game_dirs else []
+    _VFS_LAYERS_CACHE[key] = layers
+    return layers
 
 
 def _unsplit_dds(dds_path):
@@ -77,9 +99,144 @@ def _unsplit_dds(dds_path):
     return tmp
 
 
+def _unsplit_dds_vfs(layer: IPackFileSystem, rel_dds: str, temp_dir: str) -> str:
+    """Combine a split DDS (header + .0/.1/... sidecars) from one VFS layer.
+
+    Mirrors :func:`_unsplit_dds` but sources sibling files through ``layer``
+    instead of the on-disk directory. A loose hit (``real_path`` set) is
+    delegated to the original filesystem unsplitter so behavior is identical.
+    """
+    real = layer.real_path(rel_dds)
+    if real is not None:
+        return _unsplit_dds(real)
+
+    base = os.path.basename(rel_dds)
+    dds_base = os.path.splitext(base)[0]
+    if dds_base.lower().endswith(".dds"):
+        dds_base = os.path.splitext(dds_base)[0]
+
+    if "/" in rel_dds:
+        ddir = os.path.dirname(rel_dds)
+        f0_rel = ddir + "/" + dds_base + ".dds.0"
+        mip_dir = ddir + "/*"
+    else:
+        ddir = ""
+        f0_rel = dds_base + ".dds.0"
+        mip_dir = "*"
+
+    if not layer.exists(f0_rel):
+        mat = materialize(layer, rel_dds, temp_dir)
+        return mat if mat is not None else rel_dds
+
+    is_dotzero = rel_dds.endswith(".0")
+    if (not is_dotzero) and layer.exists(rel_dds):
+        header_rel = rel_dds
+    else:
+        header_rel = f0_rel
+
+    header_mat = materialize(layer, header_rel, temp_dir)
+    with open(header_mat, "rb") as f:
+        header = f.read()
+    if len(header) < 128:
+        return header_mat
+
+    mip_count = max(1, struct.unpack_from("<I", header, 28)[0])
+    dxt10 = (header[84:88] == b"DX10")
+    total_hdr = 128 + (20 if dxt10 else 0)
+
+    if (not is_dotzero) and len(header) > total_hdr + 1024:
+        return header_mat
+
+    highest = 0
+    prefix = dds_base.lower() + ".dds."
+    for name in layer.glob(mip_dir):
+        fn = os.path.basename(name).lower()
+        if fn.startswith(prefix):
+            rest = fn[len(prefix):]
+            if rest.isdigit():
+                n = int(rest)
+                if n > highest:
+                    highest = n
+    if highest == 0:
+        return header_mat
+
+    mip_rel = (ddir + "/" + dds_base + ".dds.%d" % highest) if ddir else (dds_base + ".dds.%d" % highest)
+    mip_mat = materialize(layer, mip_rel, temp_dir)
+    with open(mip_mat, "rb") as f:
+        mip0_data = f.read()
+
+    fd, tmp = tempfile.mkstemp(suffix=".dds", prefix="cristical_", dir=_project_temp())
+    os.close(fd)
+    with open(tmp, "wb") as f:
+        f.write(header[:total_hdr])
+        f.write(mip0_data)
+    return tmp
+
+
 def _is_ddna(path):
     base = os.path.basename(path).lower()
     return "_ddna" in base
+
+
+def _index_bytes_temp(idx, rel, temp_dir):
+    """Materialize one index path (pak entry) to a temp file; loose handled
+    by the caller via ``rec['real']``. Cached per rel under temp_dir."""
+    import hashlib
+    os.makedirs(temp_dir, exist_ok=True)
+    base = os.path.basename(rel)
+    stem, ext = os.path.splitext(base)
+    digest = hashlib.md5(rel.encode("utf-8")).hexdigest()[:8]
+    out = os.path.join(temp_dir, "%s_%s%s" % (stem, digest, ext))
+    if not os.path.isfile(out):
+        with open(out, "wb") as f:
+            f.write(index_open_bytes(idx, rel))
+    return out
+
+
+def _unsplit_dds_index(idx, stem_rel, temp_dir):
+    """Materialize a possibly-split DDS (header + ``.N`` sidecars) from the
+    shared VFSIndex into a single combined ``.dds`` temp file. Mirrors
+    :func:`_unsplit_dds_vfs` but sources sibling files from the index bytes,
+    so .pak textures never need a loose mount."""
+    full_rel = stem_rel + ".dds"
+    f0_rel = stem_rel + ".dds.0"
+    has_dot0 = idx.get(f0_rel) is not None
+    has_full = idx.get(full_rel) is not None
+    if not has_dot0 and not has_full:
+        return None
+    if has_dot0:
+        header_rel = f0_rel
+        header = index_open_bytes(idx, header_rel)
+    else:
+        header_rel = full_rel
+        header = index_open_bytes(idx, full_rel)
+    if len(header) < 128:
+        return _index_bytes_temp(idx, header_rel, temp_dir)
+    mip_count = max(1, struct.unpack_from("<I", header, 28)[0])
+    dxt10 = (header[84:88] == b"DX10")
+    total_hdr = 128 + (20 if dxt10 else 0)
+    if has_full and not has_dot0 and len(header) > total_hdr + 1024:
+        return _index_bytes_temp(idx, full_rel, temp_dir)
+
+    highest = 0
+    prefix = stem_rel + ".dds."
+    for k in idx.keys():
+        if k.startswith(prefix):
+            rest = k[len(prefix):]
+            if rest.isdigit():
+                n = int(rest)
+                if n > highest:
+                    highest = n
+    if highest == 0:
+        return _index_bytes_temp(idx, header_rel, temp_dir)
+    mip0 = index_open_bytes(idx, prefix + str(highest))
+
+    fd, tmp = tempfile.mkstemp(suffix=".dds", prefix="cristical_", dir=_project_temp())
+    os.close(fd)
+    with open(tmp, "wb") as f:
+        f.write(header[:total_hdr])
+        f.write(mip0)
+    return tmp
 
 
 def _find_texture(mtl_file_ref, game_dirs):
@@ -99,6 +256,28 @@ def _find_texture(mtl_file_ref, game_dirs):
         dds0 = dds + ".0"
         if os.path.isfile(dds0):
             return dds0, _unsplit_dds(dds0)
+
+    # VFS fallback: textures not found loose are resolved through the single
+    # shared VFSIndex (loose + every .pak, priority already decided inside the
+    # index), instead of per-root mounts. Only the winner is touched.
+    if not game_dirs:
+        return None, None
+    idx = mount_game([str(d) for d in game_dirs])
+    rel = mtl_file_ref.replace("\\", "/").lstrip("/")
+    if rel.lower().endswith(".dds.0"):
+        stem = rel[:-len(".dds.0")]
+    else:
+        stem = os.path.splitext(rel)[0]
+    for candidate in (stem + ".png", stem + ".dds", stem + ".dds.0"):
+        rec = idx.get(candidate)
+        if rec is None:
+            continue
+        if candidate.lower().endswith(".png"):
+            src = rec["real"] if rec["kind"] == "loose" else _index_bytes_temp(idx, candidate, _TEMP_TEX)
+        else:
+            src = _unsplit_dds_index(idx, stem, _TEMP_TEX)
+        if src is not None:
+            return candidate, src
 
     return None, None
 
@@ -157,8 +336,7 @@ def _shininess_to_roughness(s):
 
 def convert_materials(mtl_path, game_dirs, out_dir):
     os.makedirs(out_dir, exist_ok=True)
-    tree = ET.parse(mtl_path)
-    root = tree.getroot()
+    root = _load_xml(mtl_path)
     sub_mats = root.find("SubMaterials")
     if sub_mats is None:
         if root.tag == "Material":
@@ -178,6 +356,8 @@ def convert_materials(mtl_path, game_dirs, out_dir):
     def ensure_texture(file_ref, mat_name, map_type):
         nonlocal tex_count
         orig_path, src_path = _find_texture(file_ref, game_dirs)
+        if orig_path is not None and src_path is None:
+            return None
         if not src_path:
             return None
         key = (mat_name, map_type)

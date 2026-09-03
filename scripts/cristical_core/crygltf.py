@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-crygltf.py — Crysis CHR/mesh -> glTF 2.0 exporter
+crygltf.py — CrisTical: Crysis CHR/mesh -> glTF 2.0 exporter
 Authors: Soror L.'.L.'. aka Methelina    Project: CrisTical
 Version: 1.0
 
@@ -194,6 +194,7 @@ def export_gltf(skeleton, mesh):
             },
             "indices": ia,
             "_mat_id": prim.get("mat_id", 0),
+            "_mat_name": prim.get("material") or "",
         })
 
     mesh_node_idx = len(nodes)

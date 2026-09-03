@@ -10,6 +10,15 @@ trimesh           # mesh utilities
 pygltflib         # glTF 2.0 schema helpers
 bpy               # blender pipeline helpers
 
+# --- Crypto acceleration (cristical_core/twofish_fast.py) ---
+# Optional Twofish-CTR backends for encrypted (Crysis 3) .pak unpacking.
+# Auto-detected at runtime in the order cupy -> numba -> python; each is
+# validated against the pure-Python reference (KAT) before first use and
+# skipped with a warning if missing — plain python always works.
+# The venv currently runs numpy 2.x (pulled in by cupy); tested together.
+numba             # JIT backend (~70 MB/s crypto; CPU)
+cupy-cuda12x      # GPU backend via CUDA RawKernel (~50-200 MB/s; RTX 3060+)
+
 # --- GUI ---
 dearpygui         # control panel (cristical_gui.py)
 # tkinter         # ships with the uv-managed Python build; native OS dialogs

@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-cga2gltf.py --- CrisTical Crysis animated .cga -> animated glTF 2.0 Orchestrator
-Authors: Soror L.'.L'. aka Methelina    Project: CrisTical
+cga2gltf.py — CrisTical: Crysis animated .cga -> animated glTF 2.0 Orchestrator
+Authors: Soror L.'.L.'. aka Methelina    Project: CrisTical
 Version: 1.0
 
 Converts a .cga (animated geometry) file — Crysis binary chunk format 0x0745 — to
@@ -42,8 +42,10 @@ from cristical_core import (
     read_cga, read_anm, anm_to_dba,
     GltfAnimationInjector, convert_materials,
 )
+from cristical_core.crycga import CM_TO_M
 from cristical_core.mtl_resolve import resolve_mtl
 from cristical_core.crygltf import AXIS_SWAP_POS, AXIS_SWAP_QUAT, AXIS_SWAP_NRM
+from cristical_core.path_resolve import resolve_geometry_path
 
 _COMPONENT_FLOAT = 5126     # FLOAT
 _COMPONENT_USHORT = 5123    # UNSIGNED_SHORT
@@ -68,13 +70,27 @@ def _is_zero_vec(v):
 # glTF builder
 # ---------------------------------------------------------------------------
 
-def build_gltf_from_cga(cga_data):
+def build_gltf_from_cga(cga_data, scale=1.0):
     """Build a minimal valid glTF 2.0 dict + binary buffer from CGA data.
+
+    Unit convention (verified on real Crysis 1/3 .cga assets and against
+    the engine's own CGA loader):
+      - Mesh *vertex* positions are already stored at final render scale
+        (metres). They are exported as-is (times the optional uniform
+        ``scale`` scene factor).
+      - *Node* chunk translations and TCB3 position animation tracks are in
+        centimetres and must be converted to metres (``CM_TO_M``). That
+        mismatch (geometry in metres but node pivots in centimetres) is what
+        made multi-part CGA models (US tank, warrior arm) look "exploded" —
+        each small part was left hundreds of units away from its neighbours.
 
     Args:
         cga_data: dict returned by :func:`cristical_core.read_cga` with keys
             ``nodes`` (list of node dicts) and ``mesh`` (list of primitive
             dicts).
+        scale: optional uniform world-scale factor applied to BOTH mesh
+            positions and node translations (rotation is scale-invariant).
+            Default 1.0 = engine metres.
 
     Returns:
         ``(gltf, bin_bytes)`` where *gltf* is the glTF JSON dict and
@@ -128,16 +144,29 @@ def build_gltf_from_cga(cga_data):
         accessors.append(acc)
         return len(accessors) - 1
 
-    # --- one glTF mesh per CGA primitive ---
-    mesh_for_node = {}          # node_id -> first glTF mesh index
+    # --- one glTF mesh per node; a node owns ALL of its CGA subsets ---
+    # A CGA node can reference several mesh chunks / subsets (e.g. a hull body
+    # split into multiple draw calls). glTF nodes carry a single "mesh", so we
+    # merge every subset belonging to one node into a single glTF mesh whose
+    # "primitives" list has one entry per subset. Attaching only the first
+    # subset (as before) silently dropped the rest of the part.
+    from collections import OrderedDict
+    by_node = OrderedDict()
     for p in prims:
+        by_node.setdefault(p.get("node_id"), []).append(p)
+
+    gltf_meshes = []
+    mesh_for_node = {}          # node_id -> glTF mesh index
+    fallback_mesh_name = 0
+
+    def _subset_primitive(p, gltf_meshes, buf, accessors, buffer_views):
         pos_raw = []
         nrm_raw = []
         uv_raw = []
         idx_raw = []
 
         for v in p["positions"]:
-            pos_raw.extend(AXIS_SWAP_POS(v))
+            pos_raw.extend(AXIS_SWAP_POS((v[0] * scale, v[1] * scale, v[2] * scale)))
         for n in (p["normals"] or []):
             nrm_raw.extend(AXIS_SWAP_NRM(n))
         for uv in (p["uvs"] or []):
@@ -180,21 +209,24 @@ def build_gltf_from_cga(cga_data):
             ia = add_accessor(ivb, ni, "SCALAR", comp_type=_COMPONENT_USHORT)
 
         mat_idx = mat_by_name.get(p.get("material") or "material", 0)
+        return {
+            "attributes": attrs,
+            "indices": ia,
+            "material": mat_idx,
+            "mode": 4,
+            "_mat_name": p.get("material") or "material",
+            "_mat_id": p.get("mat_id", 0),
+        }
 
-        gltf_meshes.append({
-            "name": p.get("node_name", "mesh_%d" % len(gltf_meshes)),
-            "primitives": [{
-                "attributes": attrs,
-                "indices": ia,
-                "material": mat_idx,
-                "mode": 4,
-                "_mat_name": p.get("material") or "material",
-                "_mat_id": p.get("mat_id", 0),
-            }],
-        })
-
-        nid = p.get("node_id")
-        if nid is not None and nid not in mesh_for_node:
+    for nid, plist in by_node.items():
+        name = (plist[0].get("node_name") or "").strip() if plist else ""
+        if not name:
+            name = "mesh_%d" % fallback_mesh_name
+        fallback_mesh_name += 1
+        prims_out = [_subset_primitive(p, gltf_meshes, buf, accessors, buffer_views)
+                     for p in plist]
+        gltf_meshes.append({"name": name, "primitives": prims_out})
+        if nid is not None:
             mesh_for_node[nid] = len(gltf_meshes) - 1
 
     # --- topological sort: parents before children ---
@@ -225,7 +257,10 @@ def build_gltf_from_cga(cga_data):
     for ni in ordered:
         src = nodes_in[ni]
         node = {"name": src["name"]}
+        # Node translations are centimetres in the CGA; convert to metres and
+        # then apply the optional uniform scene factor.
         t = AXIS_SWAP_POS(src["pos"])
+        t = (t[0] * scale * CM_TO_M, t[1] * scale * CM_TO_M, t[2] * scale * CM_TO_M)
         if not _is_zero_vec(t):
             node["translation"] = list(t)
         q = AXIS_SWAP_QUAT(src["rot_quat"])
@@ -350,6 +385,47 @@ def _inject_animations(gltf, buf, dba, out_dir):
 # Pipeline
 # ---------------------------------------------------------------------------
 
+def _find_pak_anm_files(input_path, cga_base, game_dirs, log_fn):
+    """Find + materialize sibling .anm clips for a pak-only .cga input.
+
+    When the .cga came from a game .pak (materialized into temp/geom/ by
+    resolve_geometry_path), loose-file lookup finds no .anm. This searches
+    the mounted VFS for stem-prefixed .anm files in the same directory as
+    the original pak entry and materializes them into the same temp dir.
+
+    Returns a sorted list of real .anm paths (possibly empty).
+    """
+    from cristical_core.cryvfs import mount_gamedirs, materialize
+    from cristical_core.path_resolve import PROJ_TEMP_GEOM
+
+    # input_path is a real file (already materialized or loose). Its name
+    # carries the materialize() suffix: <stem>_<md5hash>.cga.
+    import re as _re
+    m = _re.match(r"^(.*)_[0-9a-f]{8}$", cga_base)
+    if not m:
+        return []
+    vfs_stem = m.group(1)
+
+    vfs = mount_gamedirs([str(d) for d in game_dirs])
+    # Any pak .anm whose stem starts with the .cga stem (same convention as
+    # the loose-file search: f.startswith(cga_base)).
+    candidates = {}
+    lowered = vfs_stem.lower()
+    for entry in vfs.glob("**/*.anm"):
+        low = entry.rsplit("/", 1)[-1].rsplit(".", 1)[0].lower()
+        if low.startswith(lowered):
+            candidates[entry] = None
+    if not candidates:
+        return []
+    out = []
+    for entry in sorted(candidates):
+        real = materialize(vfs, entry, PROJ_TEMP_GEOM)
+        if real:
+            out.append(real)
+            log_fn("  ANM (pak): %s -> %s" % (entry, real))
+    return sorted(out)
+
+
 def run_pipeline(input_path, game_dirs, out_gltf, do_anim=True, do_tex=True, progress_cb=None):
     """Convert a single ``.cga`` file (with sibling ``.anm`` files) to glTF 2.0.
 
@@ -378,7 +454,7 @@ def run_pipeline(input_path, game_dirs, out_gltf, do_anim=True, do_tex=True, pro
 
     L("=" * 60)
     L("CrisTical v1.0 — Crysis CGA -> glTF 2.0 Converter")
-    L("  Authors: Soror L.'.L'. aka Methelina")
+    L("  Authors: Soror L.'.L.'. aka Methelina")
     L("  Started: %s" % datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     L("  Input: %s" % os.path.abspath(input_path))
     L("=" * 60)
@@ -386,6 +462,13 @@ def run_pipeline(input_path, game_dirs, out_gltf, do_anim=True, do_tex=True, pro
     # ------------------------------------------------------------------
     # [1/3] Skeleton + mesh
     # ------------------------------------------------------------------
+    # Unit handling (established on real C1/C3 .cga while studying the
+    # engine loader): mesh vertices are already at final render scale (metres), while node
+    # translations and TCB3 position tracks are in centimetres. build_gltf
+    # converts the node translations cm -> m; anm_to_dba is told to convert
+    # its position tracks the same way (pos_to_meters=True). Applying a
+    # uniform scale to both vertices and nodes instead of leaving the mesh
+    # data alone is what previously blew multi-part CGA models apart.
     L("[1/3] Skeleton + mesh")
     data = read_cga(input_path)
     L("  nodes=%d primitives=%d" % (data["num_nodes"], data["num_prims"]))
@@ -393,7 +476,7 @@ def run_pipeline(input_path, game_dirs, out_gltf, do_anim=True, do_tex=True, pro
         pstr = str(n["parent_id"]) if n["parent_id"] is not None else "(root)"
         L("    %-32s id=%-6d parent=%-8s type=%s" % (
             n["name"][:32], n["node_id"], pstr, n["controller_type"] or "-"))
-    gltf, buf = build_gltf_from_cga(data)
+    gltf, buf = build_gltf_from_cga(data, scale=1.0)
 
     out_dir = os.path.dirname(out_gltf)
     os.makedirs(out_dir, exist_ok=True)
@@ -412,24 +495,41 @@ def run_pipeline(input_path, game_dirs, out_gltf, do_anim=True, do_tex=True, pro
                     anm_files.append(os.path.join(cga_dir, f))
         anm_files.sort()
 
-        # Map CGA controller chunk-ids to crc32(node_name) so that the
-        # controller_id produced by anm_to_dba (which is the raw TCB chunk id)
-        # resolves to the matching glTF node inside GltfAnimationInjector.
-        # Mirror gltf_anim._collect_joint_nodes exactly (no lowercasing, all
-        # underscore/space name variants registered) so the crc always hits.
-        chunk_id_to_crc = {}
-        for node in data["nodes"]:
-            name = node.get("name", "")
-            if not name:
-                continue
-            crc_variants = set()
+        # Pak-only CGA: the geometry was materialized from a game .pak into
+        # temp/geom/, so loose sibling .anm search above finds nothing. Look
+        # the .anm files up through the VFS next to the ORIGINAL virtual path
+        # (same directory, stem-prefixed) and materialize them the same way.
+        if not anm_files and game_dirs:
+            anm_files = _find_pak_anm_files(input_path, cga_base, game_dirs, L)
+
+        # Map ANM controller chunk-ids to crc32(anm node name) so that the
+        # controller_id produced by anm_to_dba (the raw TCB chunk id) resolves
+        # to the matching glTF node inside GltfAnimationInjector.
+        # Ground truth (engine LoaderCGA node/animation conventions):
+        # .anm files repeat the node hierarchy of the .cga with THEIR OWN chunk
+        # ids; the .cga nodes may carry no controller ids at all. The match is
+        # by NODE NAME (case-insensitive), so the crc map must be built from
+        # the ANM node that owns each controller, not from the CGA node.
+        # Mirror gltf_anim._collect_joint_nodes exactly (no lowercasing of the
+        # variant, all underscore/space variants registered) so crc always hits.
+        def _crc_variants(name):
+            out = set()
             for variant in (name, name.replace("_", " "), name.replace(" ", "_")):
-                crc_variants.add(zlib.crc32(variant.encode("ascii", "replace")) & 0xFFFFFFFF)
+                out.add(zlib.crc32(variant.encode("ascii", "replace")) & 0xFFFFFFFF)
+            return out
+
+        anm_chunk_id_to_crc = {}
+
+        def _register_anm_node(anm_node):
+            name = anm_node.get("name", "")
+            if not name:
+                return
+            crcs = _crc_variants(name)
             for fld in ("pos_cont_id", "rot_cont_id"):
-                cid = node.get(fld)
+                cid = anm_node.get(fld)
                 if cid is not None and cid >= 0 and cid != 0xFFFF and cid != -1:
-                    for crc in crc_variants:
-                        chunk_id_to_crc[cid] = crc
+                    for crc in crcs:
+                        anm_chunk_id_to_crc[cid] = crc
 
         if anm_files:
             dba_list = []
@@ -437,10 +537,14 @@ def run_pipeline(input_path, game_dirs, out_gltf, do_anim=True, do_tex=True, pro
                 anm_stem = os.path.splitext(os.path.basename(anm_path))[0]
                 try:
                     anm_data = read_anm(anm_path)
-                    dba = anm_to_dba(anm_data, animation_name=anm_stem)
+                    for anm_node in anm_data["nodes"]:
+                        _register_anm_node(anm_node)
+                    dba = anm_to_dba(anm_data, animation_name=anm_stem,
+                                     pos_to_meters=True)
                     for anim in dba.animations:
                         for ctrl in anim.controllers:
-                            ctrl.controller_id = chunk_id_to_crc.get(ctrl.controller_id, ctrl.controller_id)
+                            ctrl.controller_id = anm_chunk_id_to_crc.get(
+                                ctrl.controller_id, ctrl.controller_id)
                     dba_list.append(dba)
                     L("  ANM: %s (%d animation(s), %d pos_tracks, %d rot_tracks)" % (
                         os.path.basename(anm_path), len(dba.animations),
@@ -571,20 +675,38 @@ def _interactive():
     print("\n=== CrisTical: Crysis animated .cga -> glTF ===\n")
 
     cga_path = ""
-    while not cga_path or not os.path.isfile(cga_path):
+    game_dirs: list = []
+    while not cga_path:
         cga_path = input("Path to .cga file: ").strip().strip('"')
-        if not os.path.isfile(cga_path):
-            print("  File not found!")
-        elif not cga_path.lower().endswith(".cga"):
+        if not cga_path:
+            continue
+        if not cga_path.lower().endswith(".cga"):
             print("  Expected a .cga file (animated geometry)")
             cga_path = ""
+            continue
+        if not os.path.isfile(cga_path):
+            # Virtual path inside a pak? Ask for game dirs and try to
+            # materialize it before rejecting the input.
+            gd = input("  Not on disk — game dir to resolve from "
+                       "(Enter to abort): ").strip().strip('"')
+            if not gd:
+                cga_path = ""
+                continue
+            game_dirs = [d for d in (x.strip() for x in gd.split(";")) if d]
+            try:
+                cga_path = resolve_geometry_path(cga_path, game_dirs)
+                print("  Virtual path materialized.")
+            except FileNotFoundError as e:
+                print("  %s" % e)
+                cga_path = ""
     print()
 
-    game_dirs = ["F:\\Games\\Crysis_Remastered\\Game"]
-    print("Game directories (Enter to keep default, multiple separated by ;):")
-    custom = input("  [%s] : " % game_dirs[0]).strip().strip('"')
-    if custom:
-        game_dirs = [d.strip() for d in custom.split(";") if d.strip()]
+    if not game_dirs:
+        game_dirs = ["F:\\Games\\Crysis_Remastered\\Game"]
+        print("Game directories (Enter to keep default, multiple separated by ;):")
+        custom = input("  [%s] : " % game_dirs[0]).strip().strip('"')
+        if custom:
+            game_dirs = [d.strip() for d in custom.split(";") if d.strip()]
     print()
 
     cga_name = os.path.splitext(os.path.basename(cga_path))[0]
@@ -631,12 +753,16 @@ def _cli():
 
     if not args.cga:
         ap.error("--cga is required; run without args for interactive mode")
-    if not os.path.isfile(args.cga):
-        ap.error("file not found: %s" % args.cga)
+    try:
+        cga_real = resolve_geometry_path(args.cga, args.gamedir)
+    except FileNotFoundError as e:
+        ap.error(str(e))
+    if cga_real != args.cga:
+        print("[cga2gltf] virtual path materialized: %s -> %s" % (args.cga, cga_real))
 
     cga_name = os.path.splitext(os.path.basename(args.cga))[0]
     out = args.out or os.path.join(os.path.dirname(args.cga) or ".", cga_name + ".gltf")
-    run_pipeline(args.cga, args.gamedir, out,
+    run_pipeline(cga_real, args.gamedir, out,
                  do_anim=not args.no_anim, do_tex=not args.no_tex)
 
 

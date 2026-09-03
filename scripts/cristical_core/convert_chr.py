@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-convert_chr.py — Crysis 1 .chr -> glTF 2.0 converter
+convert_chr.py — CrisTical: Crysis 1 .chr -> glTF 2.0 converter
 Authors: Soror L.'.L.'. aka Methelina    Project: CrisTical
 Version: 1.0
 """

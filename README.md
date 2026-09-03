@@ -7,7 +7,7 @@ Also converts **static geometry** (`.cgf` vegetation, props) without a skeleton.
 
 Reads data from binary .chr/.cgf/.dba/.mtl files through independent analysis of the file formats. No third-party converters required.
 
-**Author:** Soror L.'.L.'. aka Methelina &nbsp;|&nbsp; **Version:** 2.1 &nbsp;|&nbsp; **License:** Apache 2.0
+**Author:** Soror L.'.L.'. aka Methelina&nbsp;|&nbsp; **Version:** 2.1 &nbsp;|&nbsp; **License:** Apache 2.0
 
 ![Output](docs/action_motor.gif)
 
@@ -219,11 +219,11 @@ CrisTical_Crysis3DConverter/
 ├── requirements.txt               # Python dependencies (incl. mcp[cli])
 ├── README.md / README.ru.md      # Documentation
 ├── scripts/
-│   ├── cristorical_gui.py          # Control panel (DearPyGui)
+│   ├── cristical_gui.py          # Control panel (DearPyGui)
 │   ├── cdf2gltf.py               # Conversion orchestrator (characters)
 │   ├── cgf2gltf.py               # Conversion orchestrator (static .cgf)
 │   ├── MCP_CrisTical_bridge.py   # MCP server (FastMCP): convert/scan/list/version tools
-│   └── cristorical_core/           # Converter library
+│   └── cristical_core/           # Converter library
 │       ├── crychr.py              # .chr/.cdf parser (CompiledBones, DataStream, CDF XML)
 │       ├── crycgf.py              # Static .cgf parser (Mesh/Node/MtlName/DataStream/MeshSubsets, COLORS stream)
 │       ├── crygltf.py             # glTF 2.0 writer (skeleton + mesh + static + COLOR_0 + TANGENT)

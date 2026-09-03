@@ -16,3 +16,4 @@ from .crydba import read_dba, has_tcb_controllers, read_dba_version
 from .crytcb import parse_controller_chunk_0826, decode_tcb_keys
 from .gltf_anim import GltfAnimationInjector
 from .tex_convert import convert_materials
+from .pak_unpack import unpack_pak, unpack_gamedir, unpack_game, plan_game_unpack

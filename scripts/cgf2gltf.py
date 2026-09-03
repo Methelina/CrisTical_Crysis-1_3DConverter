@@ -39,6 +39,7 @@ sys.path.insert(0, SCRIPT_DIR)
 
 from cristical_core import read_cgf, read_cgf_meshes, export_gltf_static, convert_materials
 from cristical_core.mtl_resolve import resolve_mtl
+from cristical_core.path_resolve import resolve_geometry_path
 
 _PROJ_TEMP = os.path.join(os.path.dirname(SCRIPT_DIR), "temp")
 
@@ -219,20 +220,38 @@ def _interactive():
     print("\n=== CrisTical: Crysis static .cgf -> glTF ===\n")
 
     cgf_path = ""
-    while not cgf_path or not os.path.isfile(cgf_path):
+    game_dirs: list = []
+    while not cgf_path:
         cgf_path = input("Path to .cgf file: ").strip().strip('"')
-        if not os.path.isfile(cgf_path):
-            print("  File not found!")
-        elif not cgf_path.lower().endswith(".cgf"):
+        if not cgf_path:
+            continue
+        if not cgf_path.lower().endswith(".cgf"):
             print("  Expected a .cgf file (static geometry)")
             cgf_path = ""
+            continue
+        if not os.path.isfile(cgf_path):
+            # Virtual path inside a pak? Ask for game dirs and try to
+            # materialize it before rejecting the input.
+            gd = input("  Not on disk — game dir to resolve from "
+                       "(Enter to abort): ").strip().strip('"')
+            if not gd:
+                cgf_path = ""
+                continue
+            game_dirs = [d for d in (x.strip() for x in gd.split(";")) if d]
+            try:
+                cgf_path = resolve_geometry_path(cgf_path, game_dirs)
+                print("  Virtual path materialized.")
+            except FileNotFoundError as e:
+                print("  %s" % e)
+                cgf_path = ""
     print()
 
-    game_dirs = ["F:\\Games\\Crysis_Remastered\\Game"]
-    print("Game directories (Enter to keep default, multiple separated by ;):")
-    custom = input("  [%s] : " % game_dirs[0]).strip().strip('"')
-    if custom:
-        game_dirs = [d.strip() for d in custom.split(";") if d.strip()]
+    if not game_dirs:
+        game_dirs = ["F:\\Games\\Crysis_Remastered\\Game"]
+        print("Game directories (Enter to keep default, multiple separated by ;):")
+        custom = input("  [%s] : " % game_dirs[0]).strip().strip('"')
+        if custom:
+            game_dirs = [d.strip() for d in custom.split(";") if d.strip()]
     print()
 
     cgf_name = os.path.splitext(os.path.basename(cgf_path))[0]
@@ -269,12 +288,16 @@ def _cli():
 
     if not args.cgf:
         ap.error("--cgf is required; run without args for interactive mode")
-    if not os.path.isfile(args.cgf):
-        ap.error("file not found: %s" % args.cgf)
+    try:
+        cgf_real = resolve_geometry_path(args.cgf, args.gamedir)
+    except FileNotFoundError as e:
+        ap.error(str(e))
+    if cgf_real != args.cgf:
+        print("[cgf2gltf] virtual path materialized: %s -> %s" % (args.cgf, cgf_real))
 
     cgf_name = os.path.splitext(os.path.basename(args.cgf))[0]
     out = args.out or os.path.join(os.path.dirname(args.cgf) or ".", cgf_name + ".gltf")
-    run_pipeline(args.cgf, args.gamedir, out,
+    run_pipeline(cgf_real, args.gamedir, out,
                  do_tex=not args.no_tex, glb=args.glb)
 
 

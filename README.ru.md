@@ -6,7 +6,7 @@
 
 Извлекает данные из бинарных .chr/.dba/.mtl файлов. Не зависит от сторонних конвертеров.
 
-**Автор:** Soror L.'.L.'. aka Methelina &nbsp;|&nbsp; **Версия:** 2.1 &nbsp;|&nbsp; **Лицензия:** Apache 2.0
+**Автор:** Soror L.'.L.'. aka Methelina&nbsp;|&nbsp; **Версия:** 2.1 &nbsp;|&nbsp; **Лицензия:** Apache 2.0
 
 ![Output](docs/action_motor.gif)
 
@@ -229,11 +229,11 @@ CrisTical_Crysis3DConverter/
 ├── requirements.txt               # Python-зависимости (включая mcp[cli])
 ├── README.md / README.ru.md       # Документация
 ├── scripts/
-│   ├── cristorical_gui.py          # Панель управления (DearPyGui)
+│   ├── cristical_gui.py          # Панель управления (DearPyGui)
 │   ├── cdf2gltf.py               # Оркестратор конвертации (персонажи)
 │   ├── cgf2gltf.py               # Оркестратор конвертации (статичный .cgf)
 │   ├── MCP_CrisTical_bridge.py   # MCP-сервер (FastMCP): convert/scan/list/version
-│   └── cristorical_core/           # Библиотека конвертера
+│   └── cristical_core/           # Библиотека конвертера
 │       ├── crychr.py              # Парсер .chr/.cdf (CompiledBones, DataStream, CDF XML)
 │       ├── crycgf.py              # Парсер статичного .cgf (Mesh/Node/MtlName/DataStream/MeshSubsets, стрим COLORS)
 │       ├── crygltf.py             # glTF 2.0 writer (скелет + меш + статика + COLOR_0 + TANGENT)

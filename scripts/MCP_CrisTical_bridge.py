@@ -86,6 +86,8 @@ TOOLS = {
     "cga": os.path.join(SCRIPT_DIR, "cga2gltf.py"),   # animated geometry
 }
 
+UNPACK_SCRIPT = os.path.join(SCRIPT_DIR, "unpack_crysis.py")  # standalone pak unpacker
+
 mcp = FastMCP(
     "cristical",
 )
@@ -278,13 +280,37 @@ def _norm_dirs(game_dirs):
     return out
 
 
-def _require_input(path):
-    """Validate the input file: absolute, exists, known extension."""
+def _resolve_virtual(path, game_dirs):
+    """Materialize a virtual (in-pak) path through the VFS.
+
+    Real files pass through unchanged. A virtual path without any
+    gamedir, or one that is not found in the mounted VFS, raises a
+    ValueError with a human-readable explanation (the MCP tool turns
+    it into the error payload the agent sees).
+    """
+    from cristical_core.path_resolve import resolve_geometry_path
+    try:
+        resolved = resolve_geometry_path(path, game_dirs)
+    except FileNotFoundError as e:
+        raise ValueError(str(e))
+    return resolved
+
+
+def _require_input(path, game_dirs=None):
+    """Validate the input file: absolute, exists (real or in-pak), known
+    extension. Virtual paths are materialized to a real temp file first."""
     if not path:
-        raise ValueError("path is required (absolute path to .cdf/.chr/.cgf/.cga)")
+        raise ValueError("path is required (absolute path to .cdf/.chr/.cgf/.cga "
+                         "or a virtual in-pak path like Objects/3dtext/a.cgf)")
     path = os.path.abspath(path)
     if not os.path.isfile(path):
-        raise ValueError("file not found: %s" % path)
+        dirs = _norm_dirs(game_dirs)
+        if not dirs:
+            raise ValueError(
+                "file not found: %s\n"
+                "if this is a virtual path inside a game .pak, pass gamedir "
+                "(the game root folder) so the bridge can materialize it" % path)
+        path = _resolve_virtual(path, dirs)
     mode = _detect_mode(path)
     if mode is None:
         raise ValueError(
@@ -332,11 +358,15 @@ def cristical_convert(
     project temp isolation), so the pipeline is identical to CLI usage.
 
     Args:
-        path: absolute path to the .cdf / .chr / .cgf / .cga file.
+        path: absolute path to the .cdf / .chr / .cgf / .cga file, or a
+            virtual in-pak path like ``Objects/3dtext/a.cgf`` (requires
+            gamedir; the bridge materializes it through the VFS).
         gamedir: game root folder(s) for textures/animations/materials
             lookup — a single string or a list. Priority order is kept
             (recommended: Remaster first, original second, unpacked
             content last). Repeatable, same as the --gamedir CLI flag.
+            Also used to materialize virtual paths from game .paks
+            (Crysis 1/2/3/Remastered).
         out: output path. Default: <project>/output/<name>.gltf (or .glb).
         anim: inject animations (default True; False = --no-anim).
         textures: convert .mtl materials + DDS->PNG (default True; False = --no-tex).
@@ -350,8 +380,8 @@ def cristical_convert(
     """
     import subprocess
 
-    src, mode = _require_input(path)
     dirs = _norm_dirs(gamedir)
+    src, mode = _require_input(path, dirs)
     out_gltf = _default_out(src, out, glb)
     out_dir = os.path.dirname(out_gltf)
     os.makedirs(out_dir, exist_ok=True)
@@ -406,7 +436,7 @@ def cristical_convert(
 
 
 @mcp.tool()
-def cristorical_scan(
+def cristical_scan(
     path: str,
     gamedir: str | list[str] | None = None,
 ) -> str:
@@ -419,24 +449,33 @@ def cristorical_scan(
     Works with .cdf, .chr, .cgf, .cga, .anm, .dba, .cal, .mtl.
 
     Args:
-        path: absolute path to the file to inspect.
+        path: absolute path to the file to inspect, or a virtual in-pak
+            path (requires gamedir; materialized through the VFS).
         gamedir: optional game root folder(s) for resolving references
-            (.dba lookup, .mtl resolution) — string or list.
+            (.dba lookup, .mtl resolution, virtual paths) — string or list.
 
     Returns:
         Human-readable inspection report; no files are written.
     """
     if not path:
         raise ValueError("path is required")
+    dirs = _norm_dirs(gamedir)
     src = os.path.abspath(path)
     if not os.path.isfile(src):
-        raise ValueError("file not found: %s" % src)
-    dirs = _norm_dirs(gamedir)
+        if not dirs:
+            raise ValueError(
+                "file not found: %s\n"
+                "if this is a virtual path inside a game .pak, pass gamedir "
+                "(the game root folder) so the bridge can materialize it" % src)
+        src = _resolve_virtual(src, dirs)
+        orig_input = path
+    else:
+        orig_input = src
 
     lines = [
         "=" * 70,
         "CrisTical MCP bridge — scan (dry run, nothing is written)",
-        "  input:   %s" % src,
+        "  input:   %s" % orig_input,
         "  gamedir: %s" % ("; ".join(dirs) if dirs else "(none)"),
         "=" * 70,
     ]
@@ -488,9 +527,13 @@ def cristorical_scan(
                     if f.lower().endswith(".anm") and f.lower().startswith(base.lower())]
             lines.append("Sibling .anm files: %s" % (", ".join(sorted(anms)) or "none"))
         elif ext == ".anm":
-            from cristical_core.crycga import read_cga
-            data = read_cga(src)
-            lines.append("ANM parsed: %d controller chunk(s)" % len(data.get("nodes", [])))
+            from cristical_core.crycga import read_anm
+            data = read_anm(src)
+            lines.append("ANM nodes: %d  controller chunks: %d" % (
+                data["num_nodes"], data["controller_chunks"]))
+            lines.append("Tracks: pos=%d rot=%d  keys: pos=%d rot=%d" % (
+                data["num_pos_tracks"], data["num_rot_tracks"],
+                data["total_keys_pos"], data["total_keys_rot"]))
         elif ext == ".dba":
             from cristical_core import read_dba, read_dba_version
             dba = read_dba(src)
@@ -529,7 +572,7 @@ def cristorical_scan(
 
 
 @mcp.tool()
-def cristorical_list(
+def cristical_list(
     directory: str | None = None,
 ) -> str:
     """List files produced by CrisTical — default: last conversion output.
@@ -573,7 +616,7 @@ def cristorical_list(
 
 
 @mcp.tool()
-def cristorical_version() -> str:
+def cristical_version() -> str:
     """Environment & version report: bridge, converter scripts, Python,
     Bin/ tools, output dir.
 
@@ -611,6 +654,318 @@ def cristorical_version() -> str:
     except Exception:
         pass
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Content catalog (pak-only discovery)
+# ---------------------------------------------------------------------------
+
+_CATALOG_EXTS = {
+    "models": (".cdf", ".chr", ".cgf", ".cga"),
+    "anims": (".dba", ".caf", ".anm", ".lmg", ".cal", ".chrparams"),
+    "textures": (".dds",),
+    "materials": (".mtl",),
+    "all": None,
+}
+
+
+def _catalog(gamedirs, kind="models", prefix="", limit=200):
+    """Return (total, listing, by_ext) of VFS asset paths in the shared index."""
+    from cristical_core.cryvfs import mount_game
+    idx = mount_game([str(d) for d in gamedirs])
+    exts = _CATALOG_EXTS.get(kind) or None
+    pre = prefix.replace("\\", "/").lstrip("/").lower()
+    matched = []
+    for k in idx.keys():
+        if pre and not k.startswith(pre):
+            continue
+        if exts is not None and not k.endswith(exts):
+            continue
+        matched.append(k)
+    matched.sort()
+    by_ext = {}
+    for k in matched:
+        e = os.path.splitext(k)[1].lower()
+        by_ext[e] = by_ext.get(e, 0) + 1
+    return matched, len(matched), by_ext
+
+
+@mcp.tool()
+def cristical_catalog(
+    gamedir: str | list[str] | None = None,
+    kind: str = "models",
+    prefix: str = "",
+    limit: int = 200,
+) -> str:
+    """Browse / catalog game content through the VFS (loose files AND .pak).
+
+    Lets you discover models or side assets inside packed game data without
+    guessing a virtual path first — list by kind and (optionally) a path
+    prefix, then feed the resulting virtual path back to cristical_convert.
+
+    Args:
+        gamedir: game data root(s) (priority order). At least one required.
+        kind: "models" (.cdf/.chr/.cgf/.cga), "anims", "textures",
+            "materials", or "all".
+        prefix: optional virtual-dir prefix filter, e.g.
+            "objects/characters/alien" (case-insensitive, forward slashes).
+            Empty = from the root.
+        limit: max asset paths to print (0 = print none, only counts).
+
+    Returns:
+        Per-extension counts plus the sorted list of matching virtual paths
+        (truncated to ``limit``), so you can pick one and pass it to
+        cristical_convert with the same gamedir.
+    """
+    dirs = _norm_dirs(gamedir)
+    if not dirs:
+        raise ValueError("gamedir is required to browse game content")
+    if kind not in _CATALOG_EXTS:
+        raise ValueError("unknown kind '%s' — expected %s"
+                         % (kind, ", ".join(sorted(_CATALOG_EXTS))))
+    matched, total, by_ext = _catalog(dirs, kind=kind, prefix=prefix, limit=limit)
+    lines = [
+        "=" * 70,
+        "CrisTical MCP bridge — content catalog",
+        "  gamedir: %s" % ("; ".join(dirs)),
+        "  kind:    %s   prefix: %s" % (kind, prefix or "(root)"),
+        "  total:   %d assets" % total,
+        "  by type: %s" % (", ".join("%s=%d" % (e, n) for e, n in sorted(by_ext.items())) or "—"),
+        "-" * 70,
+    ]
+    if limit and matched:
+        lines += ["  " + p for p in matched[:limit]]
+        if total > limit:
+            lines.append("  ... and %d more (narrow 'prefix' or raise 'limit')"
+                         % (total - limit))
+    elif matched:
+        lines.append("  (counts only — pass limit > 0 to list)")
+    else:
+        lines.append("  (no assets match kind=%s prefix=%s)" % (kind, prefix or "(root)"))
+    lines.append("Tip: feed one path above to cristical_convert with this gamedir.")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Unpack: same subprocess mechanism as the converters (scripts/unpack_crysis.py)
+# ---------------------------------------------------------------------------
+
+def _unpack_log_path(path: str, out: str | None) -> str:
+    """Deterministic log path for an unpack target (status polls find it)."""
+    import hashlib
+    key = "%s|%s" % (os.path.abspath(path).lower(),
+                    (os.path.abspath(out) if out else "").lower())
+    h = hashlib.md5(key.encode("utf-8")).hexdigest()[:10]
+    return os.path.join(PROJ_DIR, "temp", "unpack_%s.log" % h)
+
+
+def _start_detached_unpack(argv_extra: list[str], log_path: str) -> str:
+    """Launch unpack_crysis.py detached; MCP call returns immediately."""
+    import subprocess
+    cmd = [VENV_PYTHON, UNPACK_SCRIPT] + argv_extra
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    flags = 0
+    if os.name == "nt":
+        flags = (getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+                 | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
+    log_fh = open(log_path, "a", encoding="utf-8")
+    try:
+        subprocess.Popen(
+            cmd,
+            cwd=PROJ_DIR,
+            env=_bat_env(),
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            creationflags=flags,
+            shell=False,
+        )
+    finally:
+        log_fh.close()
+    return log_path
+
+
+@mcp.tool()
+def cristorical_unpack(path: str, out: str | None = None, dry_run: bool = False,
+                       rewrite: bool = False, wait: bool = False,
+                       status: bool = False, crypto: str = "auto") -> str:
+    """Unpack CryEngine .pak content to a loose tree (like the bundled
+    ``__CONTENT`` folder next to the game).
+
+    Long unpacks run as a DETACHED background subprocess of
+    ``scripts/unpack_crysis.py`` — the same subprocess-of-the-venv mechanism
+    the converters use — so this MCP call returns immediately instead of
+    blocking. Verbose log + tqdm progress go to a log file; call again with
+    ``status=True`` (same path/out) to read the tail.
+
+    Args:
+        path: a single ``.pak`` archive, OR a folder to unpack — either a
+            data root (folder with ``*.pak``) or an install directory (the
+            data root is auto-detected via its ``GameData.pak``).
+        out: directory that will hold the ``<name>.pak_Unpacked`` folders.
+            For a game folder, defaults to ``<parent of root>/__CONTENT``.
+            For a single .pak, defaults to the .pak's own directory.
+        dry_run: for a game folder, only resolve + list the paks and target
+            dir, writing nothing (useful to preview a multi-GB unpack).
+        rewrite: delete an existing ``<name>_Unpacked`` folder and re-extract
+            it (otherwise finished paks are skipped — re-running RESUMES).
+        wait: block until done (up to 900 s) and return the full log — for
+            single small paks. Default False: start detached, return at once.
+        status: start nothing — report the progress of a previously started
+            unpack for the same ``path``/``out``: running / finished /
+            aborted, plus the tail of its log.
+        crypto: Twofish-CTR backend for encrypted (Crysis 3) paks:
+            ``auto`` (default; probe numba -> cupy -> python), ``python``,
+            ``numba`` (JIT), or ``cupy`` (GPU). Passed through to
+            unpack_crysis.py as ``--crypto``.
+
+    Returns:
+        A report: what was unpacked where, files written/skipped, errors —
+        or, for a detached start, the log file to watch and how to poll.
+    """
+    import subprocess
+    import time
+
+    from cristical_core.pak_unpack import plan_game_unpack, unpack_pak
+
+    abspath = os.path.abspath(path)
+
+    # ---- status mode: report a running/finished unpack --------------------
+    if status:
+        log_path = _unpack_log_path(abspath, out)
+        if not os.path.isfile(log_path):
+            return ("no unpack log for this path/out yet: %s\n"
+                    "(call cristorical_unpack without status=True to start one)"
+                    % log_path)
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        done = "UNPACK_DONE rc=" in content
+        try:
+            fresh = (time.time() - os.path.getmtime(log_path)) < 120
+        except OSError:
+            fresh = False
+        if done:
+            state = "FINISHED"
+        elif fresh:
+            state = "RUNNING (log updated less than 2 min ago)"
+        else:
+            state = ("ABORTED or stalled (no UNPACK_DONE marker and the log "
+                     "has not been touched for >2 min) — safe to re-run, "
+                     "finished paks are skipped")
+        return "\n".join([
+            "=" * 70,
+            "CrisTical — unpack status",
+            "  path:  %s" % abspath,
+            "  log:   %s" % log_path,
+            "  state: %s" % state,
+            "-" * 70,
+            "(log tail, last ~3000 chars)",
+            content[-3000:],
+        ])
+
+    # ---- single .pak ------------------------------------------------------
+    if abspath.lower().endswith(".pak"):
+        if not os.path.isfile(abspath):
+            raise ValueError("pak not found: %s" % abspath)
+        out_root = os.path.abspath(out) if out else os.path.dirname(abspath)
+        if crypto != "auto":
+            from cristical_core.twofish_fast import set_backend as set_crypto_backend
+            set_crypto_backend(crypto)
+        if wait:
+            dest, written, skipped = unpack_pak(abspath, out_root)
+            return "\n".join([
+                "=" * 70,
+                "CrisTical — unpack pak (waited)",
+                "  pak:    %s" % abspath,
+                "  dest:   %s" % dest,
+                "  files:  %d written, %d skipped" % (written, skipped),
+                "Done: %s" % dest,
+            ])
+        log_path = _unpack_log_path(abspath, out)
+        argv = ["-i", abspath, "-o", out_root, "--crypto", crypto]
+        if rewrite:
+            argv.append("-rewrite")
+        _start_detached_unpack(argv, log_path)
+        return "\n".join([
+            "=" * 70,
+            "CrisTical — unpack pak (started in background)",
+            "  pak:    %s" % abspath,
+            "  dest:   %s" % out_root,
+            "  crypto: %s" % crypto,
+            "  log:    %s" % log_path,
+            "Poll: call cristorical_unpack with status=True (same path/out).",
+        ])
+
+    # ---- folder mode ------------------------------------------------------
+    if not os.path.isdir(abspath):
+        raise ValueError("not a .pak or a folder: %s" % abspath)
+
+    plan = plan_game_unpack(abspath, os.path.abspath(out) if out else None)
+    out_root = plan["out_root"]
+
+    if dry_run:
+        lines = [
+            "=" * 70,
+            "CrisTical — unpack game content (DRY RUN, nothing written)",
+            "  root:   %s" % plan["root"],
+            "  out:    %s" % out_root,
+            "  paks:   %d   total: %.1f MB" % (
+                plan["pak_count"], plan["total_bytes"] / (1024.0 * 1024.0)),
+            "-" * 70,
+        ]
+        for name, size in plan["paks"]:
+            lines.append("  %-28s %10.1f MB" % (name, size / (1024.0 * 1024.0)))
+        lines.append("Re-run without dry_run to unpack.")
+        return "\n".join(lines)
+
+    if wait:
+        # blocking variant, same contract as the converters (up to 900 s)
+        log_path = _unpack_log_path(abspath, out)
+        argv = ["-i", abspath, "-o", out_root, "--crypto", crypto]
+        if rewrite:
+            argv.append("-rewrite")
+        cmd = [VENV_PYTHON, UNPACK_SCRIPT] + argv
+        started = datetime.datetime.now()
+        with open(log_path, "a", encoding="utf-8") as log_fh:
+            try:
+                rc = subprocess.call(
+                    cmd, cwd=PROJ_DIR, env=_bat_env(),
+                    stdout=log_fh, stderr=subprocess.STDOUT,
+                    timeout=900, shell=False)
+            except subprocess.TimeoutExpired:
+                return ("[TIMEOUT] unpack exceeded 900 s — the subprocess was "
+                        "terminated; finished paks are kept, safe to re-run "
+                        "without wait=True (it resumes). Log: %s" % log_path)
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        dur = (datetime.datetime.now() - started).total_seconds()
+        return "\n".join([
+            "=" * 70,
+            "CrisTical — unpack game content (waited %.0f s, rc=%s)" % (dur, rc),
+            "  root:  %s" % plan["root"],
+            "  out:   %s" % out_root,
+            "-" * 70,
+            "(log tail, last ~4000 chars)",
+            content[-4000:],
+        ])
+
+    # default: detached background start
+    log_path = _unpack_log_path(abspath, out)
+    argv = ["-i", abspath, "-o", out_root, "--crypto", crypto]
+    if rewrite:
+        argv.append("-rewrite")
+    _start_detached_unpack(argv, log_path)
+    return "\n".join([
+        "=" * 70,
+        "CrisTical — unpack game content (started in background)",
+        "  root:   %s" % plan["root"],
+        "  out:    %s" % out_root,
+        "  paks:   %d   total: %.1f MB" % (
+            plan["pak_count"], plan["total_bytes"] / (1024.0 * 1024.0)),
+        "  log:    %s" % log_path,
+        "Resume: re-running skips finished paks; -rewrite forces re-extract.",
+        "Poll: call cristorical_unpack with status=True (same path/out).",
+    ])
 
 
 # ---------------------------------------------------------------------------

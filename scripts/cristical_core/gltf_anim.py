@@ -1,7 +1,21 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 """
-gltf_anim.py — Inject Crysis 1 DBA animations into a glTF skeleton
+gltf_anim.py — CrisTical: inject Crysis DBA/CAF/ANM animations into glTF
 Authors: Soror L.'.L.'. aka Methelina    Project: CrisTical
-Version: 1.0
+Version: 1.1
+
+Takes animation containers produced by the readers (crydba / crycaf /
+crycga anm_to_dba — a shared SimpleNamespace shape: per-clip name,
+secs_per_tick, and controller tracks of QuatT key-times) and writes them
+as glTF 2.0 animations into an existing skeleton .gltf + .bin pair:
+
+  - tracks are matched to skeleton nodes by controller id -> node name
+  - key times are re-normalised to each track's first key and scaled
+    by the clip's secs_per_tick
+  - additivity/clip-kind is recorded per animation in
+    extras.cryengine.animType for downstream consumers
 """
 
 import json
@@ -18,6 +32,18 @@ def _swap_pos(p):
 
 def _swap_quat(q):
     return (-q[0], q[2], q[1], q[3])
+
+
+def _qmul(a, b):
+    """glTF-frame quaternion multiply (x,y,z,w)."""
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return (
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    )
 
 
 def _fix_hemisphere(track):
@@ -116,8 +142,27 @@ class GltfAnimationInjector:
         self.gltf.setdefault("accessors", []).append(acc)
         return len(self.gltf["accessors"]) - 1
 
-    def inject(self, dba, name_filter=None, progress=print):
-        self.gltf["animations"] = []
+    def inject(self, dba, name_filter=None, progress=print, reset=True):
+        if reset:
+            self.gltf["animations"] = []
+        return self._inject_one(dba, name_filter, progress)
+
+    def inject_multi(self, containers, name_filter=None, progress=print,
+                     reset=True):
+        """Inject several DBA-shaped containers in one pass.
+
+        Semantics: reset clears animations once (not between containers),
+        then each container's clips are appended. Only one save() is
+        needed afterwards — no per-container disk round-trip.
+        """
+        if reset:
+            self.gltf["animations"] = []
+        n_total = 0
+        for dba in containers:
+            n_total += self._inject_one(dba, name_filter, progress)
+        return n_total
+
+    def _inject_one(self, dba, name_filter=None, progress=print):
         n_injected = 0
         for anim in dba.animations:
             short_name = os.path.splitext(os.path.basename(anim.name))[0]
@@ -131,6 +176,14 @@ class GltfAnimationInjector:
             pos_acc_cache = {}
             used_targets = set()
             n_channels = 0
+
+            # Additive/blend clips store rotation DELTAS relative to a base
+            # pose. If they are written as absolute node rotations the whole
+            # body folds into the base pose's local frame (delta ~ identity),
+            # looking crumpled. Bake the deltas on top of the node's own bind
+            # rotation so the body stays intact and only the deltas animate.
+            clip_kind = getattr(anim, "clip_kind", None)
+            is_additive = (clip_kind == "additive")
 
             def time_accessor(track_idx):
                 if track_idx not in time_acc_cache:
@@ -149,10 +202,17 @@ class GltfAnimationInjector:
                 if ctrl.has_rot and (node, "rotation") not in used_targets:
                     used_targets.add((node, "rotation"))
                     if ctrl.rot_t not in rot_acc_cache:
+                        bind_q = None
+                        if is_additive:
+                            bind_q = self.gltf["nodes"][node].get(
+                                "rotation", (0.0, 0.0, 0.0, 1.0))
                         track = _fix_hemisphere(dba.key_rot[ctrl.rot_t])
                         vals = []
                         for q in track:
-                            vals.extend(_swap_quat(q))
+                            g = _swap_quat(q)
+                            if is_additive:
+                                g = _qmul(bind_q, g)
+                            vals.extend(g)
                         rot_acc_cache[ctrl.rot_t] = self._add_accessor(
                             vals, len(track), "VEC4")
                     samplers.append({
@@ -188,11 +248,36 @@ class GltfAnimationInjector:
             if n_channels == 0:
                 continue
 
-            self.gltf["animations"].append({
+            animation_entry = {
                 "name": short_name,
                 "channels": channels,
                 "samplers": samplers,
-            })
+            }
+
+            # Clip type annotation (roadmap 5.5): carry the container's
+            # clip_kind into extras.cryengine.animType. Only containers
+            # that provide clip_kind (the .caf path) get the annotation —
+            # DBA/ANM outputs stay byte-identical to the baseline.
+            # partial_body is refined here from the actual animated node
+            # names (the engine treats <= 3 tracks with a "weapon" bone as partial).
+            clip_kind = getattr(anim, "clip_kind", None)
+            if clip_kind is not None:
+                if clip_kind == "full_body":
+                    node_names = [
+                        self._node_names.get(ch["target"]["node"], "")
+                        for ch in channels
+                    ]
+                    bones = [n.lower() for n in node_names if n]
+                    if bones and len(bones) <= 3 and any(
+                            "weapon" in b for b in bones):
+                        clip_kind = "partial_body"
+                animation_entry["extras"] = {
+                    "cryengine": {
+                        "animType": clip_kind,
+                    },
+                }
+
+            self.gltf["animations"].append(animation_entry)
             n_injected += 1
             if progress:
                 progress("  [anim] %-55s channels=%d" % (short_name, n_channels))

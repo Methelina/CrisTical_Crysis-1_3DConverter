@@ -1,7 +1,10 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 """
-crytcb.py — Crysis 1 TCB (TCB3 / TCBQ) .anm controller chunk (0x0826) reader
-Authors: Soror L.'.L'. aka Methelina    Project: CrisTical
-Version: 1.0
+crytcb.py — CrisTical: Crysis 1 TCB (TCB3 / TCBQ) .anm controller chunk (0x0826) reader
+Authors: Soror L.'.L.'. aka Methelina    Project: CrisTical
+Version: 1.1
 
 Format: Crysis binary chunk file, ChunkType_Controller (0xCCCC000D) version 0x0826,
         CTRL_TCB3 / CTRL_TCBQ keyframe arrays. Layout determined by

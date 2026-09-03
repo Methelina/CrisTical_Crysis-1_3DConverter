@@ -1,7 +1,18 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 """
-inject_anim.py — DBA animation injector CLI for CrisTical pipeline
+inject_anim.py — CrisTical: DBA animation injector CLI for the converter pipeline
 Authors: Soror L.'.L.'. aka Methelina    Project: CrisTical
-Version: 1.0
+Version: 1.1
+
+Standalone entry point that injects a .dba animation database into an
+existing glTF skeleton (the same injection the orchestrators run), so a
+converted model can be animated without re-running the whole pipeline.
+
+=== CLI ===
+  python inject_anim.py --gltf model.gltf --dba anims.dba
+  (see argparse in main() for the full option set)
 """
 
 import argparse

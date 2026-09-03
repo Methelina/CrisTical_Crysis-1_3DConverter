@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-crycgf.py — Static Crysis binary chunk file (.cgf) reader for static geometry
+crycgf.py — CrisTical: static Crysis binary chunk file (.cgf) reader for static geometry
 Authors: Soror L.'.L.'. aka Methelina    Project: CrisTical
 Version: 1.0
 
@@ -192,7 +192,11 @@ def _read_mesh(raw, chunks, mesh_chunk):
     positions = []
     if STREAM_POSITIONS in streams:
         _, cnt, esz, data = streams[STREAM_POSITIONS]
-        positions = [struct.unpack_from("<3f", data, i * esz) for i in range(cnt)]
+        if esz == 12:
+            positions = [struct.unpack_from("<3f", data, i * esz) for i in range(cnt)]
+        elif esz == 8:
+            # Vec3f16: 4x half-float (x, y, z, w=1.0 padding) per vertex
+            positions = [struct.unpack_from("<4e", data, i * esz)[:3] for i in range(cnt)]
 
     normals = []
     if STREAM_NORMALS in streams:

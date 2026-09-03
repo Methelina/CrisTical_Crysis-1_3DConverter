@@ -1,87 +1,26 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 """
-crydba.py — Crysis 1 DBA animation database reader (v0903/v0905 controller)
+crydba.py — CrisTical: Crysis 1 DBA animation database reader (v0903/v0905 controller)
 Authors: Soror L.'.L.'. aka Methelina    Project: CrisTical
-Version: 1.0
+Version: 1.1
 
 Format: Crysis binary chunk file, single ChunkType_Controller chunk.
 Layout determined by independent analysis of .dba sample files.
 """
 
-import math
 import struct
 import zlib
 
-KEYTIME_F32 = 0
-KEYTIME_UINT16 = 1
-KEYTIME_BYTE = 2
-KEYTIME_F32_STARTSTOP = 3
-KEYTIME_UINT16_STARTSTOP = 4
-KEYTIME_BYTE_STARTSTOP = 5
-KEYTIME_BITSET = 6
-
-POS_NOCOMPRESS = 0
-POS_NOCOMPRESS_VEC3 = 2
-
-ROT_NOCOMPRESS = 0
-ROT_NOCOMPRESS_QUAT = 1
-ROT_SMALLTREE48 = 5
-ROT_SMALLTREE64 = 6
-ROT_SMALLTREE64EXT = 8
-
-_KEYTIME_SIZE = {0: 4, 1: 2, 2: 1, 3: 4, 4: 2, 5: 1, 6: 2}
-_POS_SIZE = {0: 12, 2: 12}
-_ROT_SIZE = {0: 16, 1: 16, 5: 6, 6: 8, 8: 8}
-
-_SQRT1_2 = 0.70710678118654752
-
-
-def _smalltree_finish(index, comps):
-    out = [0.0, 0.0, 0.0, 0.0]
-    stored = [i for i in range(4) if i != index]
-    sq = 0.0
-    for k, ci in enumerate(stored):
-        out[ci] = comps[k]
-        sq += comps[k] * comps[k]
-    rem = 1.0 - sq
-    out[index] = math.sqrt(rem) if rem > 0.0 else 0.0
-    return (out[0], out[1], out[2], out[3])
-
-
-def _best_rep(q, prev_q):
-    d0 = abs(q[0]*prev_q[0] + q[1]*prev_q[1] + q[2]*prev_q[2] + q[3]*prev_q[3])
-    d1 = abs((-q[0])*prev_q[0] + (-q[1])*prev_q[1] + (-q[2])*prev_q[2] + (-q[3])*prev_q[3])
-    return q if d0 >= d1 else (-q[0], -q[1], -q[2], -q[3])
-
-
-def decompress_smalltree48(m1, m2, m3):
-    index = m3 >> 14
-    v0 = m1 & 0x7FFF
-    v1 = ((m1 >> 15) + (m2 << 1)) & 0x7FFF
-    v2 = ((m2 >> 14) + (m3 << 2)) & 0x7FFF
-    comps = [v / 23170.0 - _SQRT1_2 for v in (v0, v1, v2)]
-    return _smalltree_finish(index, comps)
-
-
-def decompress_smalltree64(m1, m2):
-    index = (m2 >> 30) & 3
-    v0 = m1 & 0xFFFFF
-    v1 = ((m1 >> 20) + (m2 << 12)) & 0xFFFFF
-    v2 = (m2 >> 8) & 0xFFFFF
-    comps = [v / 741454.0 - _SQRT1_2 for v in (v0, v1, v2)]
-    return _smalltree_finish(index, comps)
-
-
-def decompress_smalltree64ext(m1, m2):
-    index = (m2 >> 30) & 3
-    v0 = m1 & 0x1FFFFF
-    v1 = ((m1 >> 21) + (m2 << 11)) & 0x1FFFFF
-    v2 = (m2 >> 10) & 0xFFFFF
-    comps = [
-        v0 / 1482909.0 - _SQRT1_2,
-        v1 / 1482909.0 - _SQRT1_2,
-        v2 / 741454.0 - _SQRT1_2,
-    ]
-    return _smalltree_finish(index, comps)
+from .crycodecs import (
+    _KEYTIME_SIZE,
+    _POS_SIZE,
+    _ROT_SIZE,
+    decode_keytimes as _decode_keytimes,
+    decode_positions as _decode_positions,
+    decode_rotations as _decode_rotations,
+)
 
 
 class ControllerInfo:
@@ -136,69 +75,6 @@ def _cumulative(formats, size):
     out = [0] * size
     for i in range(1, size):
         out[i] = out[i - 1] + formats[i - 1]
-    return out
-
-
-def _decode_keytimes(data, offset, count, fmt):
-    if count == 0:
-        return []
-    if fmt == KEYTIME_F32:
-        return list(struct.unpack_from("<%df" % count, data, offset))
-    if fmt == KEYTIME_UINT16:
-        return [float(v) for v in struct.unpack_from("<%dH" % count, data, offset)]
-    if fmt == KEYTIME_BYTE:
-        return [float(v) for v in struct.unpack_from("<%dB" % count, data, offset)]
-    if fmt == KEYTIME_BITSET:
-        start, end, size = struct.unpack_from("<HHH", data, offset)
-        times = []
-        n_words = count - 3
-        words = struct.unpack_from("<%dH" % n_words, data, offset + 6)
-        tick = start
-        for w in words:
-            for b in range(16):
-                if (w >> b) & 1:
-                    times.append(float(tick))
-                tick += 1
-        if len(times) != size:
-            times = times[:size]
-        return times
-    if fmt == KEYTIME_F32_STARTSTOP:
-        start, stop = struct.unpack_from("<ff", data, offset)
-    elif fmt == KEYTIME_UINT16_STARTSTOP:
-        start, stop = struct.unpack_from("<HH", data, offset)
-    elif fmt == KEYTIME_BYTE_STARTSTOP:
-        start, stop = struct.unpack_from("<BB", data, offset)
-    else:
-        raise ValueError("unknown keytime format %d" % fmt)
-    n = int(round(stop - start)) + 1
-    return [float(start + i) for i in range(max(n, 0))]
-
-
-def _decode_positions(data, offset, count, fmt):
-    if fmt in (POS_NOCOMPRESS, POS_NOCOMPRESS_VEC3):
-        return [struct.unpack_from("<3f", data, offset + i * 12) for i in range(count)]
-    raise ValueError("unsupported position format %d" % fmt)
-
-
-def _decode_rotations(data, offset, count, fmt):
-    out = []
-    if fmt in (ROT_NOCOMPRESS, ROT_NOCOMPRESS_QUAT):
-        for i in range(count):
-            out.append(struct.unpack_from("<4f", data, offset + i * 16))
-    elif fmt == ROT_SMALLTREE48:
-        for i in range(count):
-            m1, m2, m3 = struct.unpack_from("<HHH", data, offset + i * 6)
-            out.append(decompress_smalltree48(m1, m2, m3))
-    elif fmt == ROT_SMALLTREE64:
-        for i in range(count):
-            m1, m2 = struct.unpack_from("<II", data, offset + i * 8)
-            out.append(decompress_smalltree64(m1, m2))
-    elif fmt == ROT_SMALLTREE64EXT:
-        for i in range(count):
-            m1, m2 = struct.unpack_from("<II", data, offset + i * 8)
-            out.append(decompress_smalltree64ext(m1, m2))
-    else:
-        raise ValueError("unsupported rotation format %d" % fmt)
     return out
 
 

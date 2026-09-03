@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-crychr.py — Crysis 1 .chr / .cgf chunk file reader
+crychr.py — CrisTical: Crysis 1 .chr / .cgf chunk file reader
 Authors: Soror L.'.L.'. aka Methelina    Project: CrisTical
 Version: 1.1
 
@@ -405,20 +405,49 @@ def _find_chr_relative(base_dir, file_ref):
     return None
 
 
-def read_cdf(cdf_path):
-    tree = ET.parse(cdf_path)
-    root = tree.getroot()
+def _vfs_materialize(ref, game_dirs):
+    """Resolve a CDF-relative reference through the mounted game VFS.
+
+    Returns a real on-disk path (materialized into the shared geometry temp
+    dir) or None when the VFS has no such entry / no game dirs given.
+    """
+    if not game_dirs:
+        return None
+    try:
+        from .cryvfs import mount_gamedirs, materialize
+        from .path_resolve import PROJ_TEMP_GEOM
+    except ImportError:
+        from cryvfs import mount_gamedirs, materialize
+        from path_resolve import PROJ_TEMP_GEOM
+    norm = ref.replace("\\", "/")
+    vfs = mount_gamedirs([str(d) for d in game_dirs])
+    return materialize(vfs, norm, PROJ_TEMP_GEOM)
+
+
+def read_cdf(cdf_path, game_dirs=None):
+    try:
+        from .cryxmlb import load_file as _load_xml
+    except ImportError:
+        from cryxmlb import load_file as _load_xml
+    root = _load_xml(cdf_path)
     base_dir = os.path.dirname(os.path.abspath(cdf_path))
 
     model_el = root.find("Model")
     model_path = None
+    model_ref = None
     if model_el is not None:
         ref = model_el.get("File", "")
         if ref:
+            model_ref = ref.replace("\\", "/")
             model_path = _find_chr_relative(base_dir, ref)
+            if model_path is None:
+                # Pak-only CDF: the .chr lives inside a game .pak — resolve
+                # the reference through the mounted VFS instead.
+                model_path = _vfs_materialize(ref, game_dirs)
 
     skins = []
     bones = []
+    attachments = []
     att_list = root.find("AttachmentList")
     if att_list is not None:
         for att in att_list.findall("Attachment"):
@@ -426,8 +455,20 @@ def read_cdf(cdf_path):
             aname = att.get("AName", "")
             binding = att.get("Binding", "")
             bone_name = att.get("BoneName", "")
+            rec = {
+                "type": atype,
+                "name": aname,
+                "bone_name": bone_name,
+                "binding": binding.replace("\\", "/") if binding else "",
+                "material": (att.get("Material", "") or "").replace("\\", "/"),
+                "rotation": att.get("Rotation", ""),
+                "position": att.get("Position", ""),
+            }
+            attachments.append(rec)
             if atype == "CA_SKIN" and binding:
                 path = _find_chr_relative(base_dir, binding)
+                if path is None:
+                    path = _vfs_materialize(binding, game_dirs)
                 if path:
                     skins.append((aname, path))
             elif atype == "CA_BONE" and bone_name:
@@ -435,20 +476,60 @@ def read_cdf(cdf_path):
 
     return {
         "model_path": model_path,
+        "model_ref": model_ref,
         "skin_attachments": skins,
         "bone_attachments": bones,
+        "attachments": attachments,
     }
 
 
-def read_chr_or_cdf(path):
+def read_chr_or_cdf(path, game_dirs=None):
     if path.lower().endswith(".cdf"):
-        cdf = read_cdf(path)
+        cdf = read_cdf(path, game_dirs)
         if not cdf["model_path"]:
             raise ValueError("CDF has no Model: %s" % path)
 
         main_data = read_chr(cdf["model_path"])
         main_bones = main_data["skeleton"]
         all_prims = list(main_data["mesh"]["primitives"])
+
+        # Each CA_SKIN attachment carries its OWN bone list whose index order
+        # does not necessarily match the main .chr skeleton (C2/C3 characters
+        # often insert extra helper bones). Skin vertices weight by that local
+        # order, so before merging we must remap every joint index onto the
+        # main skeleton by bone NAME — otherwise body parts deform under the
+        # wrong joints and look "static/chaotic" when animating.
+        main_name_idx = {}
+        for _i, _b in enumerate(main_bones):
+            main_name_idx.setdefault((_b.get("name") or "").lower(), _i)
+        _root_idx = 0
+        for _i, _b in enumerate(main_bones):
+            if _b.get("parent", -1) < 0:
+                _root_idx = _i
+                break
+
+        def _remap_skin_joints(prim, att_skeleton):
+            if not prim.get("joints"):
+                return
+            local_idx = {}
+            for _i, _b in enumerate(att_skeleton):
+                local_idx.setdefault((_b.get("name") or "").lower(), _i)
+            new_joints = []
+            n_missing = 0
+            for j4 in prim["joints"]:
+                out = []
+                for jj in j4:
+                    bname = None
+                    if 0 <= jj < len(att_skeleton):
+                        bname = (att_skeleton[jj].get("name") or "").lower()
+                    mi = main_name_idx.get(bname) if bname else None
+                    if mi is None:
+                        mi = _root_idx
+                        n_missing += 1
+                    out.append(mi)
+                new_joints.append(out)
+            prim["joints"] = new_joints
+            return n_missing
 
         if cdf["skin_attachments"]:
             print("  [cdf] model: %s (%d bones)" % (
@@ -459,6 +540,7 @@ def read_chr_or_cdf(path):
                     for p in att_data["mesh"]["primitives"]:
                         p.setdefault("_cdf_attachment", att_name)
                         p.setdefault("_cdf_chr_path", chr_path)
+                        _remap_skin_joints(p, att_data["skeleton"])
                         all_prims.append(p)
                     att_bones = len(att_data["skeleton"])
                     att_prims = len(att_data["mesh"]["primitives"])

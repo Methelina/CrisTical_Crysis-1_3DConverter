@@ -1,12 +1,18 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 """
-cristical_gui.py — CrisTical Crysis3D Converter GUI (DearPyGui)
+cristical_gui.py — CrisTical: converter GUI (DearPyGui)
 Authors: Soror L.'.L.'. aka Methelina    Project: CrisTical
-Version: 1.3
+Version: 1.4
 
 Full GUI covering all pipeline options:
   CDF file, game directories, output path,
   animation mode (skip/split/single), texture mode (skip/auto-PBR/keep),
   live CLI preview, status indicator, log.
+
+=== Run ===
+  python cristical_gui.py   (no args — the GUI is interactive)
 """
 
 import os
@@ -24,7 +30,10 @@ from cdf2gltf import run_pipeline, read_chr_or_cdf, parse_cal, resolve_dba
 from cdf2gltf import _resolve_mtl as _cdf_resolve_mtl
 from cgf2gltf import run_pipeline as run_cgf_pipeline
 from cgf2gltf import _resolve_mtl as _cgf_resolve_mtl
+from cga2gltf import run_pipeline as run_cga_pipeline
 from cristical_core import read_cdf, read_dba_version, read_cgf, read_cgf_meshes
+from cristical_core.path_resolve import resolve_geometry_path
+from cristical_core.game_profile import GameTitle, find_data_root, classify_game_dir
 import dearpygui.dearpygui as dpg
 
 SC = "status_circle"
@@ -44,6 +53,9 @@ RUN_BTN = "run_btn"
 CLI_LABEL = "cli_label"
 GD_GROUP = "gamedirs_group"
 GD_ADD_BTN = "gamedirs_add_btn"
+GAME_TITLE_COMBO = "game_title_combo"
+GAME_AUTO = "Auto-detect"
+GAME_TITLES = (GAME_AUTO,) + tuple(t.value for t in GameTitle)
 
 ANIM_MODES = ("Full pipeline (single file)", "Split per animation", "Skip animations")
 TEX_MODES  = ("Auto-PBR", "Keep as-is",  "Skip textures")
@@ -54,6 +66,7 @@ _running = False
 _logbuf = []
 _game_dirs = []
 _auto_game_root = None
+_game_title = None
 
 PROJ_ROOT = SCRIPT_DIR.parent
 RESOURCES = PROJ_ROOT / "resources"
@@ -511,8 +524,8 @@ def _rebuild_gamedirs_ui():
         with dpg.group(horizontal=True, parent=GD_GROUP):
             dpg.add_text(d, color=(180, 185, 195))
             dpg.add_button(label="Del", small=True, width=30, height=18,
-                           callback=_remove_game_dir, user_data=i, tag=f"{tag_prefix}btn_{i}")
-            with dpg.tooltip(f"{tag_prefix}btn_{i}"):
+                           callback=_remove_game_dir, user_data=i, tag=f"gdbtn_{i}")
+            with dpg.tooltip(f"gdbtn_{i}"):
                 dpg.add_text("Remove this directory from the list")
     _build_cli_preview()
     _validate_and_update_gamedir_status()
@@ -522,6 +535,34 @@ def _validate_and_update_gamedir_status():
     game_dirs = list(_game_dirs) if _game_dirs else ([_auto_game_root] if _auto_game_root else [])
     clr, label = _validate_game_dirs(game_dirs)
     set_gamedir_status(clr, label)
+    _update_game_detect_text(game_dirs)
+
+
+def _update_game_detect_text(game_dirs):
+    """Show the current edition next to the Game combo: the manually chosen
+    title, or (in Auto mode) the detected title from the data root."""
+    if not dpg.does_item_exist("game_detect_text"):
+        return
+    try:
+        sel = dpg.get_value(GAME_TITLE_COMBO)
+    except Exception:
+        sel = None
+    if sel and sel != GAME_AUTO:
+        text = sel
+    elif game_dirs:
+        try:
+            det = classify_game_dir(game_dirs[0])
+        except Exception:
+            det = None
+        if det and det["title"]:
+            text = det["title"].value
+        elif det and det["family"] == "zip":
+            text = "Crysis 1 / Warhead / Wars"
+        else:
+            text = "Auto-detect"
+    else:
+        text = "Auto-detect"
+    dpg.set_value("game_detect_text", text)
 
 
 def _remove_game_dir(sender, app_data, user_data):
@@ -546,8 +587,9 @@ def _add_game_dir():
 def _append_game_dir(path):
     global _auto_game_root
     path = os.path.normpath(path)
-    if path not in _game_dirs:
-        _game_dirs.append(path)
+    target = find_data_root(path) if _selected_game_title() is not None else path
+    if target not in _game_dirs:
+        _game_dirs.append(target)
     if _auto_game_root:
         _auto_game_root = None
     _rebuild_gamedirs_ui()
@@ -558,6 +600,35 @@ def _gamedir_dlg_callback(sender, app_data):
     path = app_data.get("file_path_name", "")
     if path:
         _append_game_dir(path)
+
+
+def _selected_game_title():
+    """The GameTitle currently chosen in the GUI combo, or None for Auto."""
+    try:
+        val = dpg.get_value(GAME_TITLE_COMBO)
+    except Exception:
+        return None
+    if not val or val == GAME_AUTO:
+        return None
+    for t in GameTitle:
+        if t.value == val:
+            return t
+    return None
+
+
+def _on_game_title_change():
+    """React to the Game edition combo: normalise any already-added install
+    roots to their canonical data root for the chosen title, then rescan."""
+    if _selected_game_title() is not None and _game_dirs:
+        mapped = []
+        for d in _game_dirs:
+            root = find_data_root(d)
+            if root not in mapped:
+                mapped.append(root)
+        if mapped != _game_dirs:
+            _game_dirs[:] = mapped
+    _rebuild_gamedirs_ui()
+    scan_model()
 
 
 # ===================================================================
@@ -661,10 +732,42 @@ def _process_character_scan(cdf_path, data, chr_path, att_count, game_dirs, mtl_
         else:
             anim_info = "none"
     else:
-        anim_info = "no .cal file"
+        # Roadmap 4.2: no .cal — report .chrparams diagnostics instead.
+        anim_info = "none"
+        try:
+            from cristical_core.crychrparams import collect_clip_refs
+            refs = collect_clip_refs(chr_path, game_dirs)
+            if refs is not None:
+                n_caf = sum(1 for c in refs.clips if c[2] == ".caf")
+                n_dba = sum(1 for c in refs.clips if c[2] == ".dba")
+                anim_info = ("chrparams: %d loose .caf, %d dba refs"
+                             % (n_caf, n_dba))
+                if refs.missing_includes:
+                    ct("Scan", "  chrparams: missing includes: %s"
+                       % ", ".join(refs.missing_includes))
+                if refs.empty_wildcards:
+                    ct("Scan", "  chrparams: empty wildcards: %s"
+                       % ", ".join(refs.empty_wildcards))
+                for name, path, ext in refs.clips[:5]:
+                    ct("Scan", "  chrparams clip: %s -> %s" % (name, path))
+                if len(refs.clips) > 5:
+                    ct("Scan", "  chrparams: ... and %d more" % (len(refs.clips) - 5))
+        except Exception:
+            pass
 
     lmg_info = "none"
-    lmg_result = collect_lmg_refs(chr_path, game_dirs)
+    # Virtual (game-relative) path of the model: for pak-materialized inputs
+    # the real chr_path lives in temp, so resolve the sibling .chrparams
+    # through the CDF's model_ref instead. collect_lmg_refs derives it from
+    # chr_path itself when the file lies inside a game root (loose inputs).
+    chr_virtual = None
+    try:
+        if cdf_path.lower().endswith(".cdf"):
+            _cdf_scan = read_cdf(cdf_path, game_dirs)
+            chr_virtual = _cdf_scan.get("model_ref")
+    except Exception:
+        chr_virtual = None
+    lmg_result = collect_lmg_refs(chr_path, game_dirs, virtual=chr_virtual)
     if lmg_result and lmg_result.get("groups"):
         lmg_info = "%d groups" % len(lmg_result["groups"])
         ct("Scan", "  LMG: %d groups (%s)" % (len(lmg_result["groups"]), lmg_result["source"]))
@@ -692,16 +795,32 @@ def _process_character_scan(cdf_path, data, chr_path, att_count, game_dirs, mtl_
 # ===================================================================
 
 def scan_model():
+    global _auto_game_root
     cdf_path = dpg.get_value(CDF_INPUT).strip().strip('"')
 
-    if not cdf_path or not os.path.isfile(cdf_path):
+    if not cdf_path:
         dpg.set_value(SCAN_LABEL, "CDF file not found")
         dpg.set_value(DETECT_LABEL, "")
         set_status((110, 110, 110), "No file")
         return
 
+    # Virtual (in-pak) path support: materialize through the VFS before
+    # any read_cgf*/read_cdf call. Real files pass through unchanged.
+    if not os.path.isfile(cdf_path):
+        game_dirs_probe = list(_game_dirs) if _game_dirs else ([_auto_game_root] if _auto_game_root else [])
+        try:
+            resolved = resolve_geometry_path(cdf_path, game_dirs_probe)
+        except FileNotFoundError as e:
+            ct("GUI", "ERROR: %s" % e)
+            dpg.set_value(SCAN_LABEL, "Path not found (real or virtual)")
+            dpg.set_value(DETECT_LABEL, "")
+            set_status((110, 110, 110), "No file")
+            return
+        if resolved != cdf_path:
+            ct("GUI", "virtual path materialized: %s -> %s" % (cdf_path, resolved))
+            cdf_path = resolved
+
     try:
-        global _auto_game_root
         if not _game_dirs:
             all_roots = _detect_game_roots_from_cdf(cdf_path)
             if all_roots:
@@ -714,7 +833,6 @@ def scan_model():
             else:
                 if _auto_game_root is not None:
                     ct("GUI", "* auto-detected game root lost")
-                _auto_game_root = None
                 _rebuild_gamedirs_ui()
 
         _validate_and_update_gamedir_status()
@@ -884,11 +1002,23 @@ def run_conversion():
     anim_mode = dpg.get_value(ANIM_MODE_COMBO)
     tex_mode  = dpg.get_value(TEX_MODE_COMBO)
 
-    if not cdf_path or not os.path.isfile(cdf_path):
+    if not cdf_path:
         ct("GUI", "ERROR: CDF file not found")
         return
 
     game_dirs = list(_game_dirs) if _game_dirs else ([_auto_game_root] if _auto_game_root else [])
+
+    # Virtual (in-pak) path support: same resolution as scan_model().
+    if not os.path.isfile(cdf_path):
+        try:
+            resolved = resolve_geometry_path(cdf_path, game_dirs)
+        except FileNotFoundError as e:
+            ct("GUI", "ERROR: %s" % e)
+            return
+        if resolved != cdf_path:
+            ct("GUI", "virtual path materialized: %s -> %s" % (cdf_path, resolved))
+            cdf_path = resolved
+
     if not game_dirs:
         ct("GUI", "WARN: No game directories specified")
         ct("GUI", "WARN: Texture/animation resolution may fail")
@@ -1023,7 +1153,7 @@ def build_gui():
                      min_size=(680, 640)):
         with dpg.group(horizontal=True):
             dpg.add_text("CrisTical Crysis3D Converter v2.1", color=(255, 200, 100))
-            dpg.add_text("  |  by Soror L.'. L.'. (Methelina)", color=(140, 145, 155))
+            dpg.add_text("  |  by Soror L.'.L.'. aka Methelina", color=(140, 145, 155))
             dpg.add_button(label="github", small=True, tag="btn_github",
                            callback=lambda: webbrowser.open("https://github.com/Methelina/CrisTical_Crysis-1_3DConverter"))
             with dpg.tooltip("btn_github"):
@@ -1077,6 +1207,17 @@ def build_gui():
 
             with dpg.child_window(height=80, border=True, tag=GD_GROUP, parent="main_window"):
                 pass
+
+            with dpg.group(horizontal=True):
+                dpg.add_text("Game:", color=(255, 200, 100))
+                dpg.add_text("Auto-detect", tag="game_detect_text", color=(235, 205, 130))
+                dpg.add_combo(items=list(GAME_TITLES), default_value=GAME_AUTO,
+                              width=170, tag=GAME_TITLE_COMBO,
+                              callback=_on_game_title_change)
+                with dpg.tooltip(GAME_TITLE_COMBO):
+                    dpg.add_text("Edition: Crysis 1 / 2 / 3, Warhead, Remastered, Wars.\n"
+                                 "Auto-detect reads the data root from the pak. Choosing a title\n"
+                                 "maps an added install folder to its canonical data root.")
 
         dpg.add_spacer(height=6)
 

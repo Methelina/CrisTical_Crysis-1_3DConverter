@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-crycga.py — Animated geometry (.cga) reader for Crysis binary chunk files.
-Authors: Soror L.'.L'. aka Methelina    Project: CrisTical
+crycga.py — CrisTical: animated geometry (.cga) reader for Crysis binary chunk files
+Authors: Soror L.'.L.'. aka Methelina    Project: CrisTical
 Version: 1.0
 
 Reads .cga (animated geometry) files — Crysis binary chunk format version 0x0745.
@@ -46,6 +46,16 @@ from cristical_core.crytcb import parse_controller_chunk_0826
 # Chunk type constants
 # ---------------------------------------------------------------------------
 CC_Controller = 0xCCCC000D  # ChunkType_Controller
+CC_Timing = 0xCCCC000E      # ChunkType_Timing (secs_per_tick source)
+
+# Engine default (r312 Controller.h): 30 ticks/sec. Real .anm files carry a
+# Timing chunk with secs_per_tick = 1/4800 (30 fps * TICKS_CONVERT 160).
+DEFAULT_SECS_PER_TICK = 1.0 / 30.0
+
+# Position track units: the engine stores TCB3 positions in centimetres
+# (scale abs_pos by 1/100 to get metres).
+# Kept switchable for A/B validation on real exported models.
+CM_TO_M = 1.0 / 100.0
 
 # ---------------------------------------------------------------------------
 # Sentinel values
@@ -239,6 +249,25 @@ def read_cga(path):
     }
 
 
+def _read_secs_per_tick(raw, chunks):
+    """secs_per_tick from the Timing chunk (ChunkType_Timing, ver 0x918/0x919).
+
+    Layout (engine TIMING_CHUNK_DESC):
+    chunk header 16 bytes, then f32 secsPerTick, i32 ticksPerFrame,
+    then global range. Falls back to the engine default 1/30 when the
+    chunk is absent.
+    """
+    for c in chunks:
+        if c["type"] == CC_Timing and c["version"] in (0x918, 0x919):
+            try:
+                spt = struct.unpack_from("<f", raw, c["offset"] + 16)[0]
+                if spt > 0:
+                    return spt
+            except struct.error:
+                continue
+    return DEFAULT_SECS_PER_TICK
+
+
 def read_anm(path):
     """Parse a .anm file and return node hierarchy + TCB controller keyframes.
 
@@ -317,17 +346,80 @@ def read_anm(path):
         "num_rot_tracks": num_rot_tracks,
         "total_keys_pos": total_keys_pos,
         "total_keys_rot": total_keys_rot,
+        "secs_per_tick": _read_secs_per_tick(raw, chunks),
     }
 
 
-def anm_to_dba(anm_data, animation_name="anm_anim"):
+def _aa_to_quat(axis, angle):
+    """Angle-axis -> quaternion (x, y, z, w).
+
+    Mirrors engine Quat::SetRotationAA semantics used by
+    TCBAngleAxisSpline::comp_deriv: identity when axis or angle is degenerate.
+    """
+    import math
+    length = math.sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2])
+    if length <= 1e-8 or abs(angle) <= 1e-8:
+        return (0.0, 0.0, 0.0, 1.0)
+    half = angle * 0.5
+    scale = math.sin(half) / length
+    q = (axis[0] * scale, axis[1] * scale, axis[2] * scale, math.cos(half))
+    n = math.sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3])
+    return (q[0] / n, q[1] / n, q[2] / n, q[3] / n)
+
+
+def _quat_mul(a, b):
+    """Hamilton product a * b for (x, y, z, w) tuples."""
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return (
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    )
+
+
+def _tcbq_to_absolute_quats(tcb_rot):
+    """Convert TCBQ keys to absolute (x, y, z, w) quaternions.
+
+    Engine ground truth (r312 LoaderCGA.cpp:279 + TCBSpline.h
+    TCBAngleAxisSpline::comp_deriv, identical in r338/CE35/Lumberyard):
+    each TCBQ key stores axis = val.v (x, y, z) and angle = val.w;
+    absolute rotation is the cumulative product starting from identity:
+    q_i = q_{i-1} * SetRotationAA(angle_i, axis_i).
+    """
+    quats = []
+    current = (0.0, 0.0, 0.0, 1.0)
+    for k in tcb_rot["keys"]:
+        v = k["value"]
+        delta = _aa_to_quat((v[0], v[1], v[2]), v[3])
+        current = _quat_mul(current, delta)
+        quats.append(current)
+    return quats
+
+
+def anm_to_dba(anm_data, animation_name="anm_anim", pos_to_meters=None):
     """Build a DBA-container-compatible object from read_anm() output.
 
     Returns a types.SimpleNamespace exposing key_times, key_pos, key_rot
     (lists of float-track/value-track lists) and animations (a single-entry
     list). Each controller is a SimpleNamespace with real boolean attributes
     has_pos/has_rot plus pos_t/pos_kt/rot_t/rot_kt track indices.
+
+    Fixes vs the original baseline (engine-verified):
+      1. TCBQ rotation keys are cumulative angle-axis deltas, not direct
+         quaternions (r312 LoaderCGA.cpp:279, TCBSpline.h comp_deriv).
+      2. secs_per_tick comes from the .anm Timing chunk (1/4800 in real
+         files) instead of the hardcoded 1/30.
+      3. TCB3 positions are stored in centimetres; pos_to_meters=True
+         scales them to metres (glTF unit). pos_to_meters=None reads the
+         CRITICAL_ANM_POS_TO_METERS env var (values: 1/true, 0/false;
+         default off = legacy behaviour, for A/B visual comparison).
     """
+    if pos_to_meters is None:
+        env = os.environ.get("CRITICAL_ANM_POS_TO_METERS", "").strip().lower()
+        pos_to_meters = env in ("1", "true", "yes", "on")
+
     dba = types.SimpleNamespace()
     dba.key_times = []
     dba.key_pos = []
@@ -335,7 +427,7 @@ def anm_to_dba(anm_data, animation_name="anm_anim"):
 
     anim = types.SimpleNamespace()
     anim.name = animation_name
-    anim.secs_per_tick = 1.0 / 30.0
+    anim.secs_per_tick = anm_data.get("secs_per_tick", DEFAULT_SECS_PER_TICK)
     anim.controllers = []
 
     for node in anm_data["nodes"]:
@@ -344,7 +436,19 @@ def anm_to_dba(anm_data, animation_name="anm_anim"):
         if tcb_pos is None and tcb_rot is None:
             continue
 
-        if tcb_rot is not None:
+        # Controller identity: the .anm node chunk references controllers
+        # via pos_cont_id / rot_cont_id (chunk ids in the ANM file). The
+        # 0x826 chunk's own nControllerID field is 0 in real files (engine
+        # ignores it; LoaderCGA keys m_arrControllers by ChunkID). Use the
+        # node's own reference fields so the crc name-map built by the
+        # pipeline from the same fields always matches.
+        pos_cont_id = node.get("pos_cont_id", NO_CONTROLLER)
+        rot_cont_id = node.get("rot_cont_id", NO_CONTROLLER)
+        if tcb_rot is not None and rot_cont_id not in (NO_CONTROLLER, -1, 0):
+            controller_id = rot_cont_id
+        elif tcb_pos is not None and pos_cont_id not in (NO_CONTROLLER, -1, 0):
+            controller_id = pos_cont_id
+        elif tcb_rot is not None:
             controller_id = tcb_rot["controller_id"]
         elif tcb_pos is not None:
             controller_id = tcb_pos["controller_id"]
@@ -361,15 +465,19 @@ def anm_to_dba(anm_data, animation_name="anm_anim"):
             rot_kt = len(dba.key_times)
             dba.key_times.append([float(k["time"]) for k in tcb_rot["keys"]])
             rot_t = len(dba.key_rot)
-            dba.key_rot.append([tuple(float(v) for v in k["value"])
-                                for k in tcb_rot["keys"]])
+            dba.key_rot.append(_tcbq_to_absolute_quats(tcb_rot))
 
         if tcb_pos is not None and tcb_pos.get("ctrl_type") == CTRL_TCB3:
             pos_kt = len(dba.key_times)
             dba.key_times.append([float(k["time"]) for k in tcb_pos["keys"]])
             pos_t = len(dba.key_pos)
-            dba.key_pos.append([tuple(float(v) for v in k["value"])
-                                for k in tcb_pos["keys"]])
+            if pos_to_meters:
+                dba.key_pos.append([
+                    tuple(float(v) * CM_TO_M for v in k["value"])
+                    for k in tcb_pos["keys"]])
+            else:
+                dba.key_pos.append([tuple(float(v) for v in k["value"])
+                                    for k in tcb_pos["keys"]])
 
         if rot_t < 0 and rot_kt < 0 and pos_t < 0 and pos_kt < 0:
             continue
