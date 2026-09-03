@@ -80,6 +80,10 @@ _clean_temp()
 # ---------------------------------------------------------------------------
 
 _CA_BONE_FRAME_BY_TITLE = {
+    GameTitle.CRYSIS_1: "lift",
+    GameTitle.CRYSIS_WARHEAD: "lift",
+    GameTitle.CRYSIS_WARS: "lift",
+    GameTitle.CRYSIS_REMASTERED: "lift",
     GameTitle.CRYSIS_2: "lift",
     GameTitle.CRYSIS_3: "raw",
 }
@@ -338,7 +342,7 @@ def _emit_ca_bone_child_nodes(gltf, buf, pieces):
 
 
 def _bone_attachment_prims(bones, bone_idx, cgf_real, bind_q, bind_pos, att_name,
-                           mode="auto", log=None):
+                           mode="auto", log=None, bind_scale=1.0, vert_scale=1.0):
     """Turn a static .cgf piece bound to a bone into skinned skin primitives.
 
     ``mode`` is the game-version dependent placement policy:
@@ -376,31 +380,52 @@ def _bone_attachment_prims(bones, bone_idx, cgf_real, bind_q, bind_pos, att_name
         # Skinning weight-1 then reproduces joint_anim * bind^-1.
         try:
             _b2w = bones[bone_idx]["b2w"]
-            anchor_p = (_b2w[3], _b2w[7], _b2w[11])
+            anchor_p = (_b2w[3] * bind_scale, _b2w[7] * bind_scale,
+                        _b2w[11] * bind_scale)
         except (IndexError, KeyError, TypeError):
             _aq, anchor_p = _bone_world_pose(bones, bone_idx)
-    for p in cgf_prims:
-        if do_lift:
-            pos = [(v[0] + anchor_p[0], v[1] + anchor_p[1], v[2] + anchor_p[2])
-                   for v in p["positions"]]
-            nrm = list(p["normals"]) if p["normals"] else []
-        else:
-            pos = list(p["positions"])
-            nrm = list(p["normals"]) if p["normals"] else []
-        joints = [[bone_idx, 0, 0, 0]] * len(p["positions"])
-        weights = [[1.0, 0.0, 0.0, 0.0]] * len(p["positions"])
-        prims.append({
-            "positions": pos,
-            "normals": nrm,
-            "uvs": p["uvs"],
-            "indices": p["indices"],
-            "joints": joints,
-            "weights": weights,
-            "mat_id": p.get("mat_id", 0),
-            "material": p.get("material", ""),
-            "_cdf_attachment": att_name,
-            "_cdf_chr_path": cgf_real,
-        })
+            if bind_scale != 1.0:
+                anchor_p = (anchor_p[0] * bind_scale, anchor_p[1] * bind_scale,
+                            anchor_p[2] * bind_scale)
+        for p in cgf_prims:
+            if vert_scale != 1.0:
+                _pv = [(v[0] * vert_scale, v[1] * vert_scale, v[2] * vert_scale)
+                    for v in p["positions"]]
+            else:
+                _pv = list(p["positions"])
+            if do_lift:
+                pos = [(v[0] + anchor_p[0], v[1] + anchor_p[1], v[2] + anchor_p[2])
+                    for v in _pv]
+                nrm = list(p["normals"]) if p["normals"] else []
+            else:
+                pos = _pv
+                nrm = list(p["normals"]) if p["normals"] else []
+            if log is not None and pos:
+                xs = [v[0] for v in pos]
+                ys = [v[1] for v in pos]
+                zs = [v[2] for v in pos]
+                minx, maxx = min(xs), max(xs)
+                miny, maxy = min(ys), max(ys)
+                minz, maxz = min(zs), max(zs)
+                log("  PRIMITIVE: att=%s, mode=%s, verts=%d, bbox=[(%f,%f,%f),(%f,%f,%f)]" % (att_name, "lift" if do_lift else "raw", len(pos), minx, miny, minz, maxx, maxy, maxz))
+                # Also log anchor_p and first vertex for first primitive of this attachment
+                if len(pos) > 0 and hasattr(self, '_debug_logged_att') and self._debug_logged_att != att_name:
+                    # Avoid spamming: log only first primitive per attachment
+                    pass
+            joints = [[bone_idx, 0, 0, 0]] * len(p["positions"])
+            weights = [[1.0, 0.0, 0.0, 0.0]] * len(p["positions"])
+            prims.append({
+                "positions": pos,
+                "normals": nrm,
+                "uvs": p["uvs"],
+                "indices": p["indices"],
+                "joints": joints,
+                "weights": weights,
+                "mat_id": p.get("mat_id", 0),
+                "material": p.get("material", ""),
+                "_cdf_attachment": att_name,
+                "_cdf_chr_path": cgf_real,
+            })
     return prims
 
 
@@ -1095,9 +1120,17 @@ def run_pipeline(input_path, game_dirs, out_gltf, do_anim=True, do_tex=True, spl
                     continue
                 bind_q = _quat_wxyz(att.get("rotation"))
                 bind_pos = _vec3(att.get("position"))
+                # C1-family CompiledBone b2w is stored in cm (ReadCompiledBones
+                # copies m_DefaultB2W unscaled) and the authored .cgf verts are in
+                # cm, while the body mesh is metres — scale both to metres (×0.01)
+                # for C1 so attachments land on the (metre) body.
+                _c1 = _title in (GameTitle.CRYSIS_1, GameTitle.CRYSIS_WARHEAD,
+                                  GameTitle.CRYSIS_WARS, GameTitle.CRYSIS_REMASTERED)
+                _bscale = 0.01 if (_c1 and _frame == "lift") else 1.0
+                _vscale = 0.01 if _c1 else 1.0
                 newp = _bone_attachment_prims(
                     bones, bi, cgf_real, bind_q, bind_pos, attname,
-                    mode=_frame, log=L)
+                    mode=_frame, log=L, bind_scale=_bscale, vert_scale=_vscale)
                 mesh["primitives"].extend(newp)
                 added += len(newp)
             if added:
