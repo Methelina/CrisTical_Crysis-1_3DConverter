@@ -359,9 +359,13 @@ def _bone_attachment_prims(bones, bone_idx, cgf_real, bind_q, bind_pos, att_name
     try:
         cgf_prims = read_cgf_meshes(cgf_real)
     except Exception as e:
-        log("  [cdf] WARN CA_BONE %s: %s" % (att_name, e))
+        log("  [cdf] WARN CA_BONE %s: read_cgf_meshes failed (%s): %s" % (
+            att_name, cgf_real, e))
         return prims
     if not cgf_prims:
+        # Do not drop silently: report a file that yielded no readable geometry.
+        log("  [cdf] WARN CA_BONE %s: no primitives read from %s" % (
+            att_name, cgf_real))
         return prims
     xs = [v[0] for p in cgf_prims for v in p["positions"]]
     ys = [v[1] for p in cgf_prims for v in p["positions"]]
@@ -396,7 +400,8 @@ def _bone_attachment_prims(bones, bone_idx, cgf_real, bind_q, bind_pos, att_name
             if bind_scale != 1.0:
                 anchor_p = (anchor_p[0] * bind_scale, anchor_p[1] * bind_scale,
                             anchor_p[2] * bind_scale)
-        for p in cgf_prims:
+    for p in cgf_prims:
+        try:
             if vert_scale != 1.0:
                 _pv = [(v[0] * vert_scale, v[1] * vert_scale, v[2] * vert_scale)
                     for v in p["positions"]]
@@ -409,6 +414,11 @@ def _bone_attachment_prims(bones, bone_idx, cgf_real, bind_q, bind_pos, att_name
             else:
                 pos = _pv
                 nrm = list(p["normals"]) if p["normals"] else []
+            joints = [[bone_idx, 0, 0, 0]] * len(p["positions"])
+            weights = [[1.0, 0.0, 0.0, 0.0]] * len(p["positions"])
+            if not pos or not p.get("indices"):
+                log("  [cdf] WARN CA_BONE %s: empty subset skipped" % att_name)
+                continue
             if log is not None and pos:
                 xs = [v[0] for v in pos]
                 ys = [v[1] for v in pos]
@@ -416,8 +426,6 @@ def _bone_attachment_prims(bones, bone_idx, cgf_real, bind_q, bind_pos, att_name
                 log("  PRIMITIVE: att=%s, mode=%s, verts=%d, bbox=[(%f,%f,%f),(%f,%f,%f)]" % (
                     att_name, "lift" if do_lift else "raw", len(pos),
                     min(xs), min(ys), min(zs), max(xs), max(ys), max(zs)))
-            joints = [[bone_idx, 0, 0, 0]] * len(p["positions"])
-            weights = [[1.0, 0.0, 0.0, 0.0]] * len(p["positions"])
             prims.append({
                 "positions": pos,
                 "normals": nrm,
@@ -430,6 +438,9 @@ def _bone_attachment_prims(bones, bone_idx, cgf_real, bind_q, bind_pos, att_name
                 "_cdf_attachment": att_name,
                 "_cdf_chr_path": cgf_real,
             })
+        except Exception as e:
+            log("  [cdf] WARN CA_BONE %s: subset error (%s): %s" % (
+                att_name, cgf_real, e))
     return prims
 
 
@@ -443,12 +454,20 @@ def _materialize_cgf(binding, game_dirs):
     idx = mount_game([str(d) for d in game_dirs]) if game_dirs else None
     if idx is None:
         return None
-    rec = idx.get(rel)
-    if rec is None:
+    try:
+        rec = idx.get(rel)
+        if rec is None:
+            return None
+        if rec["kind"] == "loose":
+            return rec["real"]
+        return _materialize_index(idx, rel, os.path.join(_PROJ_TEMP, "cdf_cgf"))
+    except Exception as e:
+        # Keep the fail-safe skip, but do not hide WHY an attachment could not
+        # materialize: the caller must be able to tell a missing binding from a
+        # real index/extraction failure.
+        print("  [cdf] WARN CA_BONE %s: materialize failed: %s: %s" % (
+            rel, type(e).__name__, e))
         return None
-    if rec["kind"] == "loose":
-        return rec["real"]
-    return _materialize_index(idx, rel, os.path.join(_PROJ_TEMP, "cdf_cgf"))
 
 
 def parse_cal_text(text):
@@ -1091,9 +1110,13 @@ def run_pipeline(input_path, game_dirs, out_gltf, do_anim=True, do_tex=True, spl
                     continue  # healthy (non-damaged) variant only
                 bi = bone_by_name.get(bname.lower())
                 if bi is None:
+                    L("  [cdf] CA_BONE %s: skip, bone '%s' not in skeleton" % (
+                        att.get("name") or base, bname))
                     continue
                 cgf_real = _materialize_cgf(binding, game_dirs)
                 if not cgf_real:
+                    L("  [cdf] CA_BONE %s: skip, cgf not materialized: %s" % (
+                        att.get("name") or base, binding))
                     continue
                 attname = att.get("name") or os.path.basename(base)
                 if _nodes_mode:
