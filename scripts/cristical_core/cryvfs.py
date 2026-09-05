@@ -240,6 +240,50 @@ class InMemoryFileSystem(IPackFileSystem):
                 yield key
 
 
+# Custom zip compression method used by the Crysis 2/3 Remastered
+# resource compiler for ``*_chk0.pak`` archives: LZ4 block streams.
+# Not a stdlib zip method; the paks also carry a ``.lz4compression``
+# marker entry (method 0) advertising the scheme.
+_ZIP_METHOD_LZ4 = 12
+
+
+def _lz4_decompress_block(data: bytes, uncompressed_size: int) -> bytes:
+    """Decompress one LZ4-block zip payload (method 12).
+
+    Engine behaviour: the Remastered resource compiler stores raw LZ4
+    block streams whose exact output size is the zip entry's
+    ``file_size`` (the standard LZ4 block API needs the size passed in).
+    ``lz4`` is imported lazily so environments without it still load
+    this module; method-12 entries then raise a clear error naming the
+    missing dependency.
+
+    Packer-bug tolerance (engine-mirroring): one entry per ~4200 in the
+    shipped C2R paks (e.g. ``plate_up_ddn.dds.8``) declares an
+    ``uncompressed_size`` SHORTER than what its LZ4 block actually
+    produces (the RC's last-block flush included 50 stale buffer
+    bytes). The game engine tolerates this - it trusts the declared
+    size and slices; the zip CRC does not match the payload either
+    (method-12 CRCs are never validated). Strict decompression fails
+    on such entries, so: retry with slack and slice back to the
+    declared size, exactly like the engine's reader.
+    """
+    try:
+        import lz4.block  # type: ignore
+    except ImportError as e:
+        raise RuntimeError(
+            "pak uses LZ4 compression (method 12) but the 'lz4' package "
+            "is not installed (pip install lz4)") from e
+    try:
+        return lz4.block.decompress(data, uncompressed_size=uncompressed_size)
+    except Exception:
+        # Oversized block (see note): decompress with slack and slice.
+        slack = min(uncompressed_size, 64 * 1024)
+        out = lz4.block.decompress(data, uncompressed_size=uncompressed_size + slack)
+        if len(out) < uncompressed_size:
+            raise
+        return out[:uncompressed_size]
+
+
 class ZipFileSystem(IPackFileSystem):
     """Backed by a ZIP archive (vanilla CryEngine ``.pak`` / ``.zip``).
 
@@ -293,26 +337,48 @@ class ZipFileSystem(IPackFileSystem):
         ``zipfile`` refuses such entries ("File name in directory ... and
         header ... differ").  The data itself is fine, so read the
         payload straight from the file with the CD metadata only.
+
+        Compression methods (per the zip central directory):
+          0  = stored;
+          8  = raw DEFLATE (zlib with -15 window);
+          12 = LZ4 block (Crysis 2/3 Remastered ``*_chk0.pak`` ship a
+               ``.lz4compression`` marker entry and LZ4-compressed
+               payloads; the engine's resource compiler writes this
+               custom method, python's ``zipfile`` knows neither 12 nor
+               the marker). Engine-derived behaviour: the payload is a
+               raw LZ4 block stream whose uncompressed size is the zip
+               entry's ``file_size``.
         """
         try:
             return self._zip.read(real_name)
-        except zipfile.BadZipFile:
-            pass
+        except zipfile.BadZipFile as e:
+            # The / vs \ filename mismatch above - fall through to the
+            # manual local-header parse. Keep the original error for the
+            # re-raise path below so nothing is silently swallowed.
+            cd_error = e
         info = self._zip.getinfo(real_name)
-        if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
-            raise
+        if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED,
+                                     _ZIP_METHOD_LZ4):
+            raise RuntimeError(
+                "unsupported pak compression method %d for %s"
+                % (info.compress_type, real_name)) from cd_error
         # Parse the local header ourselves: PK\x03\x04 + 26 fixed bytes,
         # then name + extra; the data starts right after them.
         self._zip.fp.seek(info.header_offset)
         fixed = self._zip.fp.read(30)
         if fixed[:4] != b"PK\x03\x04":
-            raise
+            raise zipfile.BadZipFile("bad local header for %s" % real_name)
         name_len, extra_len = struct.unpack("<HH", fixed[26:30])
         data_start = info.header_offset + 30 + name_len + extra_len
         self._zip.fp.seek(data_start)
         raw = self._zip.fp.read(info.compress_size)
         if info.compress_type == zipfile.ZIP_DEFLATED:
             return zlib.decompress(raw, -15)
+        if info.compress_type == _ZIP_METHOD_LZ4:
+            # Engine behaviour (Crysis 2/3 Remastered resource compiler):
+            # method 12 payloads are LZ4 block streams sized to the zip
+            # entry's uncompressed size; verified against real paks.
+            return _lz4_decompress_block(raw, info.file_size)
         return raw
 
     def exists(self, path: str) -> bool:

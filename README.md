@@ -1,11 +1,8 @@
 # CrisTical Crysis3D Converter
 
-Converts Crysis 1 characters (original + Remaster) to glTF 2.0.
-Uses `.cdf` (Character Definition File) as the root assembly point,
-merging the main model with all attachments into a single output.
-Also converts **static geometry** (`.cgf` vegetation, props) without a skeleton.
+Converts Crysis game assets to glTF 2.0: characters, static and animated objects, and whole levels. Supported editions: Crysis 1 (original), Warhead, Crysis 2, Crysis 3, Remastered and Wars — the game version is auto-detected from the data, so manual selection is usually unnecessary.
 
-Reads data from binary .chr/.cgf/.dba/.mtl files through independent analysis of the file formats. No third-party converters required.
+A character is built around `.cdf` (Character Definition File), the root assembly point that merges the main model, all attachments and its skeleton animations into a single output. Also converts static geometry (`.cgf` vegetation, props) and animated objects (`.cga`). Reads data from binary .chr/.cgf/.cga/.dba/.anm/.mtl files through independent analysis of the file formats. No third-party converters required.
 
 **Author:** Soror L.'.L.'. aka Methelina&nbsp;|&nbsp; **Version:** 2.1 &nbsp;|&nbsp; **License:** Apache 2.0
 
@@ -32,8 +29,32 @@ Reads data from binary .chr/.cgf/.dba/.mtl files through independent analysis of
 - **GUI + CLI** — graphical control panel and full command-line mode
 - **Native file dialogs** — Browse/+ buttons open the OS picker (tkinter); the built-in dialog is only a fallback
 - **Auto-detect game root** — GUI finds game directory by walking up from .cdf
-- **MCP server** — `MCP_CrisTical_bridge.py` exposes the full pipeline as native MCP tools (Kilo Code, Claude, Cursor, ...): `cristical_convert`, `cristical_scan`, `cristical_list`, `cristical_version`
-- **Universal** — works with any Crysis 1 character or object
+- **MCP server** — `MCP_CrisTical_bridge.py` exposes the full pipeline as native MCP tools (Kilo Code, Claude, Cursor, ...): convert, scan, catalog, list, version, level2json, unpack
+- **Animated geometry (.cga)** — node hierarchy with .anm animation → glTF
+- **Object collider export** — `--extract-collision` writes the engine collider into a separate `<name>_collision.gltf` (handy for doors, openings and archways)
+- **Level export** — level → readable JSON description (geometry, objects, lights; for Remastered data also full voxel-surface color)
+- **Archive unpacking** — encrypted game .pak archives are unpacked into plain folders
+- **Auto edition detection** — game version (Crysis 1/2/3, Warhead, Remastered, Wars) is detected automatically from the archive format
+- **Universal** — works with characters, objects and levels across Crysis 1-3, Warhead, Remastered and Wars
+
+---
+
+## Support by game edition
+
+| Capability | Crysis 1 | Warhead | Crysis 2 | Crysis 3 | Remastered | Wars |
+|------|------|------|------|------|------|------|
+| Character with skeleton and animations → glTF | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |
+| Static object → glTF | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |
+| Animated object (.cga) → glTF | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |
+| Textures + PBR materials | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |
+| Object collider export | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |
+| Level export into JSON description | — | — | — | — | ✔ | — |
+| Game archive unpacking | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |
+| Full color of voxel surfaces | — | — | — | — | ✔ | — |
+
+Legend: ✔ = available · — = not available · "in progress" = partial / work in progress.
+
+Warhead and Wars use the same engine and data format as Crysis 1, so they are handled the same way as Crysis 1. Level export to JSON and the full color of voxel surfaces currently work with Remastered data.
 
 ---
 
@@ -54,7 +75,7 @@ Run `Install_CrisTical.bat` once. The installer automatically downloads and sets
 
 - **uv** — the package manager used to provision the environment
 - **Python 3.11** — full uv-managed build (includes **tkinter** for the native OS file dialogs in the GUI)
-- Python libraries from `requirements.txt` (pyassimp, numpy, pillow, bpy, dearpygui, trimesh, pygltflib + **mcp[cli]** for the MCP bridge)
+- Python libraries from `requirements.txt` (numpy, pillow, bpy, dearpygui, pygltflib + numba and cupy-cuda12x as Twofish backends for Crysis 3 .pak + **mcp[cli]** for the MCP bridge)
 - Assimp 6.0.5 (assimp.dll)
 - 7-Zip (7za.exe) — for .dba extraction from Animations.pak
 - **MCP bridge check** — verifies that `scripts/MCP_CrisTical_bridge.py` imports cleanly (FastMCP ready)
@@ -97,6 +118,9 @@ and pipeline, but as native tools with verbose reports. Humans keep the
 | `cristical_scan` | Dry-run inspection: chunk versions, bone counts, mesh stats, materials, animations — no files written |
 | `cristical_list` | List conversion output files with sizes and mtimes |
 | `cristical_version` | Environment report: venv, scripts, Bin/ tools, mcp library |
+| `cristical_catalog` | Browse assets inside the game archives by type and path (models/animations/textures/materials) |
+| `cristical_level2json` | Export a level into a JSON description through the same pipeline as level2json.py |
+| `cristorical_unpack` | Unpack .pak archives into plain folders (dry-run / rewrite / wait / status / crypto) |
 
 Registration in Kilo Code (`kilo.json`, `mcp` section):
 
@@ -124,6 +148,7 @@ The control panel shows:
 - **Auto-detection** — GUI walks up from .cdf to find game root automatically
 - **Native dialogs** — file/folder pickers use the OS dialog (tkinter); the built-in dialog only appears if tkinter is unavailable
 - **CLI Preview** — shows the equivalent command-line command
+- **Edition & options** — auto game-version detection (Auto / Crysis 1 / Warhead / Crysis 2 / Crysis 3 / Remastered / Wars), texture mode (Auto-PBR / Keep as-is / Skip), "Output .glb" and "Extract collision mesh" checkboxes, and a "Map" tab to export a level into a JSON description
 
 ---
 
@@ -168,6 +193,11 @@ Recommended order: **Remaster → original → unpacked content**.
 | `--no-tex` | Skip texture conversion |
 | `--split-anim` | Export each animation as a separate glTF |
 | `--glb` | Output as binary `.glb` instead of `.gltf`+`.bin` |
+| `--cga <path>` | Path to an animated `.cga` file |
+| `--caf <path>` | Inject a loose `.caf` clip on top of the animation databases (repeatable) |
+| `--no-root-motion` | Drop the root-bone position track from `.caf` clips |
+| `--extract-collision` | Also write the engine collider into `<name>_collision.gltf` |
+| `--level <path>` | Export a level into a JSON description (level2json) |
 | `--help` | Show help |
 
 For static `.cgf` conversion the vertex colors (COLOR_0) are the raw RGBA
@@ -200,12 +230,20 @@ With `--split-anim`, each animation is placed in a `model_name_anims/` subdirect
 
 | File | Format | Versions |
 |------|--------|----------|
-| .cdf | Character Definition (XML) | Crysis 1 |
+| .cdf | Character Definition (XML) | Crysis 1-3, Remastered and others |
 | .chr | Crysis binary character chunk file | v0744, v0745 |
 | .cgf | Static chunk file (Mesh/Node/DataStream/MeshSubsets) | v0744, v0745 |
+| .cga | Animated geometry | v0744, v0745 |
+| .anm | CGA animation (TCB3 controllers) | — |
 | .dba | CryAnimation Database | v0903, v0905 |
+| .caf | Single animation clip | — |
+| .chrparams | Character animation setup (XML) | — |
+| .lmg | Locomotion groups (XML) | — |
+| .bspace / .comb | Blend-space (XML) | — |
 | .mtl | XML material | single/multi-material |
 | .dds | DirectDraw Surface (split/combined) | DXT1, DXT5, ATI2N/3DC, RGBA8, L8 |
+| .pak | Game archives (zip/XXTEA/Twofish, encrypted) | C1/Remaster, C2, C3 |
+| .xmlb | Binary CryXmlB/pbxml | C2/C3 |
 | .cal | Character Animation List | plain text |
 
 ---
@@ -220,18 +258,25 @@ CrisTical_Crysis3DConverter/
 ├── README.md / README.ru.md      # Documentation
 ├── scripts/
 │   ├── cristical_gui.py          # Control panel (DearPyGui)
-│   ├── cdf2gltf.py               # Conversion orchestrator (characters)
+│   ├── cdf2gltf.py               # Conversion orchestrator (characters .cdf/.chr)
 │   ├── cgf2gltf.py               # Conversion orchestrator (static .cgf)
-│   ├── MCP_CrisTical_bridge.py   # MCP server (FastMCP): convert/scan/list/version tools
+│   ├── cga2gltf.py               # Conversion orchestrator (animated .cga + .anm)
+│   ├── level2json.py             # Level -> JSON export (incl. voxels)
+│   ├── unpack_crysis.py          # Game archive .pak unpacking
+│   ├── MCP_CrisTical_bridge.py   # MCP server (FastMCP): convert/scan/catalog/list/version/level2json/unpack
 │   └── cristical_core/           # Converter library
 │       ├── crychr.py              # .chr/.cdf parser (CompiledBones, DataStream, CDF XML)
-│       ├── crycgf.py              # Static .cgf parser (Mesh/Node/MtlName/DataStream/MeshSubsets, COLORS stream)
-│       ├── crygltf.py             # glTF 2.0 writer (skeleton + mesh + static + COLOR_0 + TANGENT)
+│       ├── crycgf.py              # Static .cgf parser (Mesh/Node/MtlName/DataStream/MeshSubsets, COLOR0/COLOR1 streams)
+│       ├── crycga.py              # Animated .cga parser
 │       ├── crydba.py              # DBA v0903/v0905 parser (SmallTree64, Bitset, TCB)
+│       ├── crycaf.py              # Single .caf clip parser
+│       ├── crygltf.py             # glTF 2.0 writer (skeleton + mesh + static + COLOR_0 + TANGENT)
 │       ├── gltf_anim.py           # Animation injector + quaternion hemisphere fix
-│       ├── tex_convert.py         # Texture converter (MTL→PNG, DDS→PNG, DDN Z, DDS unsplit)
-│       ├── inject_anim.py         # CLI: animation injection
-│       └── convert_chr.py         # CLI: skeleton + mesh
+│       ├── crycollision.py        # Engine collider decoder -> <name>_collision.gltf
+│       ├── crychrparams.py / crylmg.py / crybspace.py / crytcb.py / crycodecs.py
+│       ├── cryvfs.py / crypak.py / twofish_fast.py / pak_unpack.py / cryxmlb.py
+│       ├── game_profile.py / mtl_resolve.py / path_resolve.py
+│       └── ...                    # full module list lives in scripts/cristical_core/
 ├── resources/
 │   └── ModeSevenBETAVHS.ttf      # Interface font
 ├── docs/                          # Screenshots

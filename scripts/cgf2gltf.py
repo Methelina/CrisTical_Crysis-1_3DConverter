@@ -88,7 +88,7 @@ def _write_glb(gltf, bin_bytes, out_path):
         f.write(header + chunk_json + chunk_bin)
 
 
-def run_pipeline(input_path, game_dirs, out_gltf, do_tex=True, progress_cb=None, glb=False):
+def run_pipeline(input_path, game_dirs, out_gltf, do_tex=True, progress_cb=None, glb=False, read_color1=False, extract_collision=False):
     import datetime
     log = []
 
@@ -107,7 +107,7 @@ def run_pipeline(input_path, game_dirs, out_gltf, do_tex=True, progress_cb=None,
     L("=" * 60)
 
     L("[1/3] Static mesh")
-    prims = read_cgf_meshes(input_path)
+    prims = read_cgf_meshes(input_path, read_color1=read_color1)
     if not prims:
         L("  ERROR: no mesh primitives found")
         return log
@@ -208,6 +208,17 @@ def run_pipeline(input_path, game_dirs, out_gltf, do_tex=True, progress_cb=None,
             json.dump(gltf, f, separators=(",", ":"))
         L("  Output: %s + %s" % (out_gltf, out_bin))
 
+    if extract_collision:
+        from cristical_core.crycgf import read_cgf_collision
+        from cristical_core.crycollision import write_collision_gltf
+        col_meshes = read_cgf_collision(input_path)
+        if col_meshes:
+            col_path = write_collision_gltf(out_gltf, col_meshes)
+            tri_count = sum(len(m.indices) // 3 for m in col_meshes)
+            L("  Collision: %s (%d tris)" % (col_path, tri_count))
+        else:
+            L("  Collision: none (no baked concave trimesh in physics chunk)")
+
     log_path = out_gltf.replace(".gltf", ".log")
     with open(log_path, "w", encoding="utf-8") as lf:
         lf.write("\n".join(log))
@@ -284,6 +295,8 @@ def _cli():
     ap.add_argument("--out", "-o", help="output .gltf path")
     ap.add_argument("--no-tex", action="store_true", help="skip textures/materials")
     ap.add_argument("--glb", action="store_true", help="output as binary .glb instead of .gltf+.bin")
+    ap.add_argument("--extract-collision", action="store_true",
+                    help="also write '<stem>_collision.gltf' with the engine-baked collision mesh")
     args = ap.parse_args()
 
     if not args.cgf:
@@ -298,7 +311,7 @@ def _cli():
     cgf_name = os.path.splitext(os.path.basename(args.cgf))[0]
     out = args.out or os.path.join(os.path.dirname(args.cgf) or ".", cgf_name + ".gltf")
     run_pipeline(cgf_real, args.gamedir, out,
-                 do_tex=not args.no_tex, glb=args.glb)
+                 do_tex=not args.no_tex, glb=args.glb, extract_collision=args.extract_collision)
 
 
 if __name__ == "__main__":

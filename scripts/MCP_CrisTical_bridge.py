@@ -87,6 +87,7 @@ TOOLS = {
 }
 
 UNPACK_SCRIPT = os.path.join(SCRIPT_DIR, "unpack_crysis.py")  # standalone pak unpacker
+LEVEL2JSON_SCRIPT = os.path.join(SCRIPT_DIR, "level2json.py")  # level directory -> JSON
 
 mcp = FastMCP(
     "cristical",
@@ -966,6 +967,142 @@ def cristorical_unpack(path: str, out: str | None = None, dry_run: bool = False,
         "Resume: re-running skips finished paks; -rewrite forces re-extract.",
         "Poll: call cristorical_unpack with status=True (same path/out).",
     ])
+
+
+# ---------------------------------------------------------------------------
+# Tool: level directory -> JSON (level2json.py)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def cristical_level2json(
+    level_dir: str,
+    out: str | None = None,
+    game_dir: str | None = None,
+    visual_only: bool = False,
+    npc_classes: str | None = None,
+    skip_classes: str | None = None,
+    no_vegetation: bool = False,
+    timeout: int = 600,
+) -> str:
+    """Export an unpacked Crysis level directory to JSON (entities, lights,
+    brushes, vegetation) — the level counterpart of the model converters.
+
+    Parses levelinfo.xml / leveldata.xml / mission_mission0.xml and the
+    binary terrain.dat (Crysis 1 Remastered format only; gated by game
+    profile) to produce a single JSON describing the whole level:
+    metadata, terrain parameters, vegetation definitions, surface types,
+    entities (mission + Brush/Vegetation instances) and lights (with Unity
+    URP light_type mapping: Directional/Spot/Point).
+
+    Runs level2json.py as a subprocess of the project venv interpreter with
+    the same environment the .bat would set (Bin/ on PATH, project temp
+    isolation), so the pipeline is identical to CLI usage.
+
+    Args:
+        level_dir: path to the unpacked level directory (contains
+            levelinfo.xml, terrain\\terrain.dat; typically the level_Unpacked
+            folder produced by cristorical_unpack).
+        out: output JSON path. Default: <project>/output/<level_name>.json.
+        game_dir: game data root for profile detection (e.g.
+            F:/Games/Crysis_Remastered/Game); inferred from the level path
+            when omitted. Only the Crysis Remastered profile enables
+            terrain.dat parsing (brushes/vegetation); other profiles export
+            XML-only with a warning.
+        visual_only: export only visual entities (Light/EnvironmentLight/
+            SimpleLight/FogVolume/ParticleEffect).
+        npc_classes: comma-separated entity classes to keep (e.g.
+            "Alien,Scout"); mutually exclusive in spirit with visual_only.
+        skip_classes: comma-separated classes to drop — binary octree record
+            classes (Brush, Vegetation, VoxelObject, Road, Decal, Decal2,
+            WaterVolume, WaterWave, DistanceCloud, AutoCubeMap, LPV,
+            LightShape) and mission entity classes with the same names.
+        no_vegetation: shorthand for skip_classes="Vegetation" — skip
+            per-instance vegetation records; group definitions are still
+            exported for spawner-based placement.
+        timeout: hard limit in seconds for the subprocess (default 600).
+
+    Returns:
+        Verbose report: executed command line, full pipeline log,
+        exit code, duration, and the output file path with size.
+    """
+    import subprocess
+
+    if not os.path.isdir(level_dir):
+        return "Error: level directory not found: %s" % level_dir
+    level_name = os.path.basename(os.path.normpath(level_dir))
+    out_json = out or os.path.join(OUTPUT_DIR, "%s.json" % level_name)
+    out_dir = os.path.dirname(out_json)
+    os.makedirs(out_dir, exist_ok=True)
+
+    argv = [level_dir, out_json]
+    if game_dir:
+        argv += ["--game-dir", game_dir]
+    if visual_only:
+        argv.append("--visual-only")
+    if npc_classes:
+        argv += ["--npc-classes", npc_classes]
+    if skip_classes:
+        argv += ["--skip-classes", skip_classes]
+    if no_vegetation:
+        argv.append("--no-vegetation")
+    cmd_display = "%s level2json.py %s" % (
+        os.path.basename(VENV_PYTHON), " ".join(argv))
+
+    header = [
+        "=" * 70,
+        "CrisTical MCP bridge — level to JSON",
+        "  level:     %s" % level_dir,
+        "  game_dir:  %s" % (game_dir or "(inferred from level path)"),
+        "  output:    %s" % out_json,
+        "  options:   visual_only=%s npc=%s skip=%s no_vegetation=%s" % (
+            visual_only, npc_classes, skip_classes, no_vegetation),
+        "  execute:   %s" % cmd_display,
+        "=" * 70,
+    ]
+
+    started = datetime.datetime.now()
+    try:
+        proc = subprocess.Popen(
+            [VENV_PYTHON, LEVEL2JSON_SCRIPT] + argv,
+            cwd=PROJ_DIR,
+            env=_bat_env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            shell=False,
+        )
+        lines = []
+        try:
+            rc = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            lines = ["[TIMEOUT] level export exceeded %s s — process killed" % timeout]
+            rc = -1
+        else:
+            for line in proc.stdout:
+                lines.append(line.rstrip("\r\n"))
+        _LAST_OUTPUT["files"] = [out_json] if rc == 0 and os.path.isfile(out_json) else []
+        _LAST_OUTPUT["dir"] = out_dir
+    except Exception as exc:
+        return "\n".join(header + ["", "[ERROR] failed to launch level2json.py: %s" % exc])
+
+    dur = (datetime.datetime.now() - started).total_seconds()
+    size = os.path.getsize(out_json) if os.path.isfile(out_json) else 0
+    report = header + [
+        "",
+        "--- PIPELINE LOG (full, verbose) ---",
+    ] + lines + [
+        "",
+        "--- RESULT ---",
+        "exit code:  %s" % ("OK (0)" if rc == 0 else "FAILED (%s)" % rc),
+        "duration:   %.1f s" % dur,
+        "",
+        "OUTPUT: %s (%s bytes)" % (out_json, size),
+    ]
+    return "\n".join(report)
 
 
 # ---------------------------------------------------------------------------

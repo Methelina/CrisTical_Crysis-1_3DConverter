@@ -1,10 +1,8 @@
 # CrisTical Crysis3D Converter
 
-Конвертер анимированных персонажей Crysis 1 (оригинал + Remaster) в glTF 2.0.
-Работает на основе `.cdf` (Character Definition File) — корневого файла сборки
-персонажа, который объединяет основную модель, все аттачменты и анимации со скелетом.
+Конвертер игровых ассетов Crysis в glTF 2.0: персонажи, статичные и анимированные объекты, а также уровни. Поддерживаются Crysis 1 (оригинал), Warhead, Crysis 2, Crysis 3, Remastered и Wars; версия игры определяется автоматически по данным, выбирать её вручную в большинстве случаев не нужно.
 
-Извлекает данные из бинарных .chr/.dba/.mtl файлов. Не зависит от сторонних конвертеров.
+Персонаж строится на основе `.cdf` (Character Definition File) — корневого файла сборки, который объединяет основную модель, все аттачменты и анимации со скелетом. Извлекает данные из бинарных .chr/.dba/.cga/.anm/.mtl файлов. Не зависит от сторонних конвертеров.
 
 **Автор:** Soror L.'.L.'. aka Methelina&nbsp;|&nbsp; **Версия:** 2.1 &nbsp;|&nbsp; **Лицензия:** Apache 2.0
 
@@ -31,8 +29,32 @@
 - **GUI + CLI** — графическая панель управления и полноценный командный режим
 - **Нативные диалоги** — кнопки Browse/+ открывают системный выбор файлов/папок (tkinter); встроенный диалог используется только как запасной вариант
 - **Автоопределение папок** — GUI сам находит корень игры по структуре папок от .cdf
-- **MCP-сервер** — `MCP_CrisTical_bridge.py` открывает весь пайплайн как нативные MCP-инструменты (Kilo Code, Claude, Cursor, ...): `cristical_convert`, `cristical_scan`, `cristical_list`, `cristical_version`
-- **Универсальность** — работает с любыми персонажами и объектами Crysis 1
+- **MCP-сервер** — `MCP_CrisTical_bridge.py` открывает весь пайплайн как нативные MCP-инструменты (Kilo Code, Claude, Cursor, ...): convert, scan, catalog, list, version, level2json, unpack
+- **CGA-анимация** — анимированная геометрия (.cga) с иерархией нод и анимацией .anm → glTF
+- **Коллайдер объекта** — опция `--extract-collision` выгружает движковый коллайдер в отдельный файл `<имя>_collision.gltf` (удобно для дверей, проёмов и арок)
+- **Экспорт уровня** — `level2json.py` переводит уровень в читаемое JSON-описание (геометрия, объекты, свет; для данных Remastered — также полноценный цвет воксельных поверхностей)
+- **Распаковка архивов** — `unpack_crysis.py` распаковывает зашифрованные .pak в обычные папки
+- **Автоопределение редакции** — версия игры (Crysis 1/2/3, Warhead, Remastered, Wars) определяется автоматически по формату архивов
+- **Универсальность** — работает с персонажами, объектами и уровнями Crysis 1–3, Warhead, Remastered и Wars
+
+---
+
+## Поддержка по версиям игры
+
+| Возможность | Crysis 1 | Warhead | Crysis 2 | Crysis 3 | Remastered | Wars |
+|------|------|------|------|------|------|------|
+| Персонаж со скелетом и анимациями → glTF | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |
+| Статичный объект → glTF | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |
+| Анимированный объект (.cga) → glTF | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |
+| Текстуры + PBR-материалы | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |
+| Экспорт коллайдера объекта | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |
+| Экспорт уровня в JSON-описание | — | — | — | — | ✔ | — |
+| Распаковка игровых архивов | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |
+| Полный цвет воксельных поверхностей | — | — | — | — | ✔ | — |
+
+Легенда: ✔ = доступно · — = недоступно · «в работе» = частично/в разработке.
+
+Warhead и Wars построены на том же движке и том же формате данных, что и Crysis 1, поэтому обрабатываются тем же способом, что и Crysis 1. Экспорт уровня в JSON и полный цвет воксельных поверхностей сейчас работают с данными Remastered.
 
 ---
 
@@ -53,7 +75,7 @@
 
 - **uv** — менеджер пакетов, через который подготавливается окружение
 - **Python 3.11** — полноценная uv-managed сборка (включает **tkinter** для нативных системных диалогов выбора файлов в GUI)
-- Python-библиотеки из `requirements.txt` (pyassimp, numpy, pillow, bpy, dearpygui, trimesh, pygltflib + **mcp[cli]** для MCP-бриджа)
+- Python-библиотеки из `requirements.txt` (numpy, pillow, bpy, dearpygui, pygltflib + numba и cupy-cuda12x — бэкенды расшифровки Crysis 3 .pak + **mcp[cli]** для MCP-бриджа)
 - Assimp 6.0.5 (assimp.dll) — для работы с 3D-форматами
 - 7-Zip (7za.exe) — для извлечения .dba из Animations.pak
 - **Проверка MCP-бриджа** — установка заверяется, что `scripts/MCP_CrisTical_bridge.py` импортируется без ошибок (FastMCP готов к работе)
@@ -93,6 +115,9 @@ Run_CrisTical.bat --cdf alien.cdf --gamedir "F:\Games\Crysis\Game" --split-anim 
 | `cristical_scan` | Осмотр без конвертации: версии чанков, количество костей, статистика меша, материалы, анимации — файлы не записываются |
 | `cristical_list` | Список файлов вывода с размерами и временем изменения |
 | `cristical_version` | Отчёт об окружении: venv, скрипты, утилиты Bin/, версия mcp |
+| `cristical_catalog` | Просмотр ассетов в игровых архивах по типу и пути (модели/анимации/текстуры/материалы) |
+| `cristical_level2json` | Экспорт уровня в JSON-описание через тот же пайплайн, что и level2json.py |
+| `cristorical_unpack` | Распаковка .pak в обычные папки (dry-run / rewrite / wait / status / crypto) |
 
 Регистрация в Kilo Code (`kilo.json`, секция `mcp`):
 
@@ -120,6 +145,7 @@ Run_CrisTical.bat --cdf alien.cdf --gamedir "F:\Games\Crysis\Game" --split-anim 
 - **Автоопределение** — GUI сам поднимается по папкам от .cdf и находит корень игры
 - **Нативные диалоги** — выбор файлов/папок через системный диалог (tkinter); встроенный диалог появляется только если tkinter недоступен
 - **CLI-превью** — показывает формируемую команду для запуска из консоли
+- **Редакция и опции** — автоопределение версии игры (Auto / Crysis 1 / Warhead / Crysis 2 / Crysis 3 / Remastered / Wars), режим текстур (Auto-PBR / Keep as-is / Skip), галочки «Output .glb» и «Extract collision mesh», вкладка «Map» для экспорта уровня в JSON-описание
 
 ---
 
@@ -180,6 +206,11 @@ Run_CrisTical.bat --cgf bush.cgf --gamedir "F:\Games\Crysis\Game" --glb
 | `--no-tex` | Пропустить конвертацию текстур |
 | `--split-anim` | Экспорт каждой анимации в отдельный glTF |
 | `--glb` | Вывод бинарным `.glb` вместо `.gltf`+`.bin` |
+| `--cga <путь>` | Путь к анимированному `.cga` файлу |
+| `--caf <путь>` | Инжект отдельного `.caf`-клипа поверх баз анимаций (можно несколько) |
+| `--no-root-motion` | Убрать позиционный трек корневой кости из .caf-клипов |
+| `--extract-collision` | Дополнительно выгрузить движковый коллайдер в `<имя>_collision.gltf` |
+| `--level <путь>` | Экспорт уровня в JSON-описание (level2json) |
 | `--help` | Показать справку |
 
 ---
@@ -210,12 +241,20 @@ output/
 
 | Файл | Формат | Версии |
 |------|--------|--------|
-| .cdf | Character Definition (XML) | Crysis 1 |
+| .cdf | Character Definition (XML) | Crysis 1–3, Remastered и др. |
 | .chr | Бинарный формат персонажа Crysis (чанки) | v0744, v0745 |
 | .cgf | Статичный формат Crysis (Mesh/Node/DataStream/MeshSubsets) | v0744, v0745 |
+| .cga | Анимированная геометрия | v0744, v0745 |
+| .anm | Анимация CGA (контроллеры TCB3) | — |
 | .dba | База анимаций Crysis | v0903, v0905 |
+| .caf | Одиночный анимационный клип | — |
+| .chrparams | Настройки анимаций персонажа (XML) | — |
+| .lmg | Группы локомоции (XML) | — |
+| .bspace / .comb | Blend-space (XML) | — |
 | .mtl | XML материал | одно-/много-материальный |
 | .dds | DirectDraw Surface (split/combined) | DXT1, DXT5, ATI2N/3DC, RGBA8, L8 |
+| .pak | Игровые архивы (zip/XXTEA/Twofish, зашифрованные) | C1/Remaster, C2, C3 |
+| .xmlb | Бинарный CryXmlB/pbxml | C2/C3 |
 | .cal | Character Animation List | текстовый |
 
 ---
@@ -230,18 +269,25 @@ CrisTical_Crysis3DConverter/
 ├── README.md / README.ru.md       # Документация
 ├── scripts/
 │   ├── cristical_gui.py          # Панель управления (DearPyGui)
-│   ├── cdf2gltf.py               # Оркестратор конвертации (персонажи)
+│   ├── cdf2gltf.py               # Оркестратор конвертации (персонажи .cdf/.chr)
 │   ├── cgf2gltf.py               # Оркестратор конвертации (статичный .cgf)
-│   ├── MCP_CrisTical_bridge.py   # MCP-сервер (FastMCP): convert/scan/list/version
+│   ├── cga2gltf.py               # Оркестратор конвертации (анимированный .cga + .anm)
+│   ├── level2json.py             # Экспорт уровня в JSON (в т.ч. воксели)
+│   ├── unpack_crysis.py          # Распаковка игровых архивов .pak
+│   ├── MCP_CrisTical_bridge.py   # MCP-сервер (FastMCP): convert/scan/catalog/list/version/level2json/unpack
 │   └── cristical_core/           # Библиотека конвертера
 │       ├── crychr.py              # Парсер .chr/.cdf (CompiledBones, DataStream, CDF XML)
-│       ├── crycgf.py              # Парсер статичного .cgf (Mesh/Node/MtlName/DataStream/MeshSubsets, стрим COLORS)
-│       ├── crygltf.py             # glTF 2.0 writer (скелет + меш + статика + COLOR_0 + TANGENT)
+│       ├── crycgf.py              # Парсер статичного .cgf (Mesh/Node/MtlName/DataStream/MeshSubsets, стримы COLOR0/COLOR1)
+│       ├── crycga.py              # Парсер анимированного .cga
 │       ├── crydba.py              # Парсер DBA v0903/v0905 (SmallTree64, Bitset, TCB)
+│       ├── crycaf.py              # Парсер одиночных .caf-клипов
+│       ├── crygltf.py             # glTF 2.0 writer (скелет + меш + статика + COLOR_0 + TANGENT)
 │       ├── gltf_anim.py           # Инжектор анимаций + quaternion hemisphere fix
-│       ├── tex_convert.py         # Конвертер текстур (MTL→PNG, DDS→PNG, DDN Z, DDS unsplit)
-│       ├── inject_anim.py         # CLI: инжект анимаций
-│       └── convert_chr.py         # CLI: скелет + меш
+│       ├── crycollision.py        # Декодер движковых коллайдеров → <имя>_collision.gltf
+│       ├── crychrparams.py / crylmg.py / crybspace.py / crytcb.py / crycodecs.py
+│       ├── cryvfs.py / crypak.py / twofish_fast.py / pak_unpack.py / cryxmlb.py
+│       ├── game_profile.py / mtl_resolve.py / path_resolve.py
+│       └── ...                    # полный список модулей — в каталоге scripts/cristical_core/
 ├── resources/
 │   └── ModeSevenBETAVHS.ttf      # Шрифт интерфейса
 ├── docs/                          # Скриншоты

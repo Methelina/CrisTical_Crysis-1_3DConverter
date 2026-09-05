@@ -1027,7 +1027,7 @@ def _write_glb(gltf, bin_bytes, out_path):
         f.write(header + chunk_json + chunk_bin)
 
 
-def run_pipeline(input_path, game_dirs, out_gltf, do_anim=True, do_tex=True, split_anim=False, progress_cb=None, glb=False, caf_paths=None, keep_root_motion=True, virtual_path=None):
+def run_pipeline(input_path, game_dirs, out_gltf, do_anim=True, do_tex=True, split_anim=False, progress_cb=None, glb=False, caf_paths=None, keep_root_motion=True, virtual_path=None, extract_collision=False):
     """Convert a character (.cdf/.chr) to glTF.
 
     ``virtual_path`` is the ORIGINAL user-facing path (e.g. the in-pak
@@ -1066,6 +1066,20 @@ def run_pipeline(input_path, game_dirs, out_gltf, do_anim=True, do_tex=True, spl
             # XML — companion lookups (.cal/.chrparams/.mtl) resolve from it
             # through the shared VFSIndex even for pak-materialized inputs.
             model_ref = cdf_info.get("model_ref")
+
+    if extract_collision:
+        from cristical_core.crycgf import read_any_collision
+        from cristical_core.crycollision import write_collision_gltf
+        col_src = chr_path if os.path.isfile(chr_path) else None
+        col_meshes = read_any_collision(col_src) if col_src else []
+        if col_meshes:
+            os.makedirs(os.path.dirname(out_gltf) or ".", exist_ok=True)
+            col_path = write_collision_gltf(out_gltf, col_meshes, scale=1.0)
+            tri_count = sum(len(m.indices) // 3 for m in col_meshes)
+            L("  Collision: %s (%d tris, local/bind)" % (col_path, tri_count))
+        else:
+            L("  Collision: none (no baked collision/proxies%s)" % (
+                " in " + col_src if col_src else ""))
 
     L("[1/3] Skeleton + mesh")
     data = read_chr_or_cdf(input_path, game_dirs)
@@ -1202,7 +1216,18 @@ def run_pipeline(input_path, game_dirs, out_gltf, do_anim=True, do_tex=True, spl
             if att_name:
                 att_chr = prim.get("_cdf_chr_path")
                 if att_chr:
-                    att_mtl = os.path.normpath(_resolve_mtl(att_chr, game_dirs))
+                    # Resolve the attachment's .mtl by its SUB-MATERIAL
+                    # names, not by the skin file name: the MtlName chunk
+                    # inside a CA_SKIN carries the material LIBRARY name
+                    # (jellyalive.skin -> "mastermind_body"), which often
+                    # differs from the skin's own file name. Scoring by
+                    # the primitive material names finds that .mtl; the
+                    # file-name-first path stays as the fast route.
+                    att_mats = [p.get("material") for p in mesh["primitives"]
+                                if p.get("_cdf_attachment") == att_name
+                                and p.get("material")]
+                    att_mtl = os.path.normpath(
+                        _resolve_mtl(att_chr, game_dirs, prim_materials=att_mats))
                     if os.path.isfile(att_mtl) and att_mtl not in loaded_mtls:
                         mats2, pngs2, _mi2, _ts2, _xm2 = convert_materials(att_mtl, game_dirs, out_dir)
                         loaded_mtls.add(att_mtl)
@@ -1509,6 +1534,8 @@ def _cli():
     ap.add_argument("--caf", action="append", default=[], help="loose .caf clip to inject (repeatable)")
     ap.add_argument("--no-root-motion", action="store_true", help="drop the root bone position track from .caf clips")
     ap.add_argument("--glb", action="store_true", help="output as binary .glb instead of .gltf+.bin")
+    ap.add_argument("--extract-collision", action="store_true",
+                    help="also write '<stem>_collision.gltf' with the engine-baked collision mesh")
     args = ap.parse_args()
 
     if not args.cdf:
@@ -1526,7 +1553,8 @@ def _cli():
                  do_anim=not args.no_anim, do_tex=not args.no_tex,
                  split_anim=args.split_anim, glb=args.glb,
                  caf_paths=args.caf, keep_root_motion=not args.no_root_motion,
-                 virtual_path=args.cdf if cdf_real != args.cdf else None)
+                 virtual_path=args.cdf if cdf_real != args.cdf else None,
+                 extract_collision=args.extract_collision)
 
 
 if __name__ == "__main__":

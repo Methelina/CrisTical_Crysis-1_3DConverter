@@ -426,7 +426,7 @@ def _find_pak_anm_files(input_path, cga_base, game_dirs, log_fn):
     return sorted(out)
 
 
-def run_pipeline(input_path, game_dirs, out_gltf, do_anim=True, do_tex=True, progress_cb=None):
+def run_pipeline(input_path, game_dirs, out_gltf, do_anim=True, do_tex=True, progress_cb=None, extract_collision=False):
     """Convert a single ``.cga`` file (with sibling ``.anm`` files) to glTF 2.0.
 
     Args:
@@ -480,6 +480,17 @@ def run_pipeline(input_path, game_dirs, out_gltf, do_anim=True, do_tex=True, pro
 
     out_dir = os.path.dirname(out_gltf)
     os.makedirs(out_dir, exist_ok=True)
+
+    if extract_collision:
+        from cristical_core.crycgf import read_any_collision
+        from cristical_core.crycollision import write_collision_gltf
+        col_meshes = read_any_collision(input_path)
+        if col_meshes:
+            col_path = write_collision_gltf(out_gltf, col_meshes, scale=1.0)
+            tri_count = sum(len(m.indices) // 3 for m in col_meshes)
+            L("  Collision: %s (%d tris, local)" % (col_path, tri_count))
+        else:
+            L("  Collision: none (no baked collision geometry)")
 
     # ------------------------------------------------------------------
     # [2/3] Animations
@@ -748,6 +759,8 @@ def _cli():
     ap.add_argument("--gamedir", "-g", action="append", default=[], help="game root (repeatable)")
     ap.add_argument("--out", "-o", help="output .gltf path")
     ap.add_argument("--no-anim", action="store_true", help="skip animations")
+    ap.add_argument("--extract-collision", action="store_true",
+                    help="also write '<stem>_collision.gltf' with the engine-baked collision mesh")
     ap.add_argument("--no-tex", action="store_true", help="skip textures")
     args = ap.parse_args()
 
@@ -763,7 +776,7 @@ def _cli():
     cga_name = os.path.splitext(os.path.basename(args.cga))[0]
     out = args.out or os.path.join(os.path.dirname(args.cga) or ".", cga_name + ".gltf")
     run_pipeline(cga_real, args.gamedir, out,
-                 do_anim=not args.no_anim, do_tex=not args.no_tex)
+                 do_anim=not args.no_anim, do_tex=not args.no_tex, extract_collision=args.extract_collision)
 
 
 if __name__ == "__main__":

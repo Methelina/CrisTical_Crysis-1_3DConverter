@@ -45,6 +45,8 @@ CC_DataStream     = 0xCCCC0016
 CC_MeshSubsets    = 0xCCCC0017
 CC_Mesh           = 0xCCCC0000
 CC_Node           = 0xCCCC000B
+CC_Physics        = 0xCCCC0018  # baked physics geometry (phys_geometry blob)
+CC_CompiledPhyProxies = 0xACDC0003  # .chr/.skin physical proxies (raw triangle arrays)
 
 # ECgfStreamType
 STREAM_POSITIONS = 0
@@ -167,8 +169,13 @@ def _resolve_subset_material(materials, node, subset_mat_id):
 # Mesh stream loading (mirrors CLoaderCGF::LoadCompiledMeshChunk)
 # ---------------------------------------------------------------------------
 
-def _read_mesh(raw, chunks, mesh_chunk):
-    """Read a compiled mesh chunk + its referenced streams."""
+def _read_mesh(raw, chunks, mesh_chunk, read_color1=False):
+    """Read a compiled mesh chunk + its referenced streams.
+
+    When read_color1 is True and a COLORS2 stream (stream 4) is present with a
+    vertex count matching COLORS, the per-vertex RGBA is recomposed from both
+    engine color streams (voxel layout) instead of emitting raw COLOR0.
+    """
     o = mesh_chunk["offset"]
     nFlags  = struct.unpack_from("<i", raw, o + 16)[0]
     nFlags2 = struct.unpack_from("<i", raw, o + 20)[0]
@@ -211,9 +218,25 @@ def _read_mesh(raw, chunks, mesh_chunk):
     colors = []
     if STREAM_COLORS in streams:
         _, cnt, esz, data = streams[STREAM_COLORS]
+        color1_data = None
+        color1_esz = 0
+        if read_color1 and STREAM_COLORS2 in streams:
+            _, cnt2, esz2, data2 = streams[STREAM_COLORS2]
+            # COLORS2 must match COLORS vertex count and 4-byte packing to recompose voxel RGBA
+            if cnt2 == cnt and esz2 == 4:
+                color1_data = data2
+                color1_esz = esz2
         for i in range(cnt):
             r, g, b, a = struct.unpack_from("<4B", data, i * esz)
-            colors.append((r / 255.0, g / 255.0, b / 255.0, a / 255.0))
+            if color1_data is not None:
+                # Voxel layout (VoxMan.cpp): COLOR0 = (voxel.r, surfaceTypeId, voxel.g, AO),
+                # COLORS2 carries voxel.b in its .b channel (other channels ~0). Recompose
+                # honest RGBA: R=voxel.r, G=voxel.g, B=voxel.b, A=AO. surfaceTypeId (COLOR0.g)
+                # is engine-only metadata and is intentionally dropped (not exported to glTF).
+                _, _, vb, _ = struct.unpack_from("<4B", color1_data, i * color1_esz)
+                colors.append((r / 255.0, b / 255.0, vb / 255.0, a / 255.0))
+            else:
+                colors.append((r / 255.0, g / 255.0, b / 255.0, a / 255.0))
 
     indices = []
     if STREAM_INDICES in streams:
@@ -395,8 +418,13 @@ def _mat4_apply(m, p):
 # Public API
 # ---------------------------------------------------------------------------
 
-def read_cgf(path):
-    """Parse a static CGF and return full structure (nodes, meshes, materials)."""
+def read_cgf(path, read_color1=False):
+    """Parse a static CGF and return full structure (nodes, meshes, materials).
+
+    read_color1: when True, recompose voxel RGBA from both COLORS and COLORS2
+    streams (voxel-extract path). Defaults to False so ordinary CGF conversion
+    is unchanged.
+    """
     with open(path, "rb") as f:
         raw = f.read()
     chunks = _chunk_table(raw)
@@ -410,7 +438,7 @@ def read_cgf(path):
     loaded = {}
     for mc in mesh_chunks:
         try:
-            loaded[mc["id"]] = _read_mesh(raw, chunks, mc)
+            loaded[mc["id"]] = _read_mesh(raw, chunks, mc, read_color1=read_color1)
         except Exception:
             continue
 
@@ -423,14 +451,118 @@ def read_cgf(path):
     }
 
 
-def read_cgf_meshes(path):
+def read_cgf_collision(path):
+    """Return list of CollisionMesh decoded from the engine-baked physics chunk(s).
+
+    CryEngine cooks static-object collision into a physics chunk (CC_Physics) whose
+    body is a serialized phys_geometry trimesh (see cristical_core.crycollision).
+    Only concave triangle-mesh collision (geomType == trimesh) is decoded; convex
+    primitives and files without a physics chunk yield an empty result.
+
+    Collision vertices/indices are LOCAL to their node; no node/world transform is
+    applied here (typical single-geometry static props are authored at the origin,
+    so local == world for them). This is intentionally kept a pure decode; callers
+    decide placement.
+    """
+    from cristical_core.crycollision import decode_cgf_physics_chunk
+    with open(path, "rb") as f:
+        raw = f.read()
+    chunks = _chunk_table(raw)
+    out = []
+    for pc in _find_chunks(chunks, CC_Physics):
+        o = pc["offset"]
+        if o + 20 > len(raw):
+            continue
+        n_data = struct.unpack_from("<i", raw, o + 16)[0]
+        if n_data <= 0:
+            continue
+        # MESH_PHYSICS_DATA_CHUNK_DESC_0800: CHUNK_HEADER(16) + 6 ints desc (24) then physicsData[n_data].
+        start = o + 40
+        if start + n_data > len(raw):
+            continue
+        payload = raw[start: start + n_data]
+        try:
+            mesh = decode_cgf_physics_chunk(payload)
+        except ValueError:
+            continue
+        if mesh is not None:
+            out.append(mesh)
+    return out
+
+
+def read_any_collision(path):
+    """Universal collision extractor for any CryTek chunk asset.
+
+    Decodes BOTH baked collision representations the engine stores in assets:
+      * MeshPhysicsData trimeshes (CC_Physics, static .cgf / .cga / level geometry):
+        concave collision mesh embedded as a phys_geometry trimesh.
+      * CompiledPhysicalProxies (CC_CompiledPhyProxies, .chr/.skin): raw per-proxy
+        triangle arrays (points + indices).
+    Whichever is present is returned as CollisionMesh list in the file's native units
+    (callers apply their own unit scale, e.g. cm -> m for .cga/.chr). Positions are
+    local to their node/proxy; no node/world transform is applied here.
+    """
+    from cristical_core.crycollision import CollisionMesh, decode_cgf_physics_chunk
+    with open(path, "rb") as f:
+        raw = f.read()
+    chunks = _chunk_table(raw)
+    out = []
+
+    # 1) MeshPhysicsData trimeshes
+    for pc in _find_chunks(chunks, CC_Physics):
+        o = pc["offset"]
+        if o + 20 > len(raw):
+            continue
+        n_data = struct.unpack_from("<i", raw, o + 16)[0]
+        if n_data <= 0:
+            continue
+        start = o + 40  # MESH_PHYSICS_DATA: CHUNK_HEADER(16) + 6 ints desc then physicsData
+        if start + n_data > len(raw):
+            continue
+        try:
+            mesh = decode_cgf_physics_chunk(raw[start: start + n_data])
+        except ValueError:
+            continue
+        if mesh is not None:
+            out.append(mesh)
+
+    # 2) CompiledPhysicalProxies (.chr/.skin): numPhysicalProxies then proxy records
+    for pc in _find_chunks(chunks, CC_CompiledPhyProxies):
+        o = pc["offset"]
+        if o + 20 > len(raw):
+            continue
+        n_prox = struct.unpack_from("<I", raw, o + 16)[0]
+        cur = o + 20
+        for _ in range(n_prox):
+            if cur + 16 > len(raw):
+                break
+            _chunk_id, n_pts, n_idx, n_mat = struct.unpack_from("<IIII", raw, cur)
+            cur += 16
+            body = 12 * n_pts + 2 * n_idx + n_mat
+            if cur + body > len(raw):
+                break
+            positions = [struct.unpack_from("<3f", raw, cur + 12 * i) for i in range(n_pts)]
+            cur += 12 * n_pts
+            indices = list(struct.unpack_from("<%dH" % n_idx, raw, cur))
+            cur += 2 * n_idx + n_mat
+            proxy = CollisionMesh()
+            proxy.positions = positions
+            proxy.indices = indices
+            out.append(proxy)
+    return out
+
+
+def read_cgf_meshes(path, read_color1=False):
     """Return list of primitive dicts for all meshes with node transforms baked in.
 
     Each primitive has: positions, normals, uvs, colors (RGBA floats), tangents,
     indices, mat_id, node_name. Positions/normals are in the node's world space
     (parent chain applied), matching how the object is positioned in-game.
+
+    read_color1: when True, recompose voxel RGBA from both COLORS and COLORS2
+    streams. Defaults to False so ordinary CGF conversion is unchanged.
     """
-    data = read_cgf(path)
+    data = read_cgf(path, read_color1=read_color1)
     nodes = data["nodes"]
     mesh_chunks = data["mesh_chunks"]
     materials = data["material_chunks"]

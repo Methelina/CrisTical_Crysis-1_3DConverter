@@ -4,12 +4,20 @@
 """
 cristical_gui.py — CrisTical: converter GUI (DearPyGui)
 Authors: Soror L.'.L.'. aka Methelina    Project: CrisTical
-Version: 1.4
+Version: 1.5
 
-Full GUI covering all pipeline options:
-  CDF file, game directories, output path,
-  animation mode (skip/split/single), texture mode (skip/auto-PBR/keep),
-  live CLI preview, status indicator, log.
+Tabbed GUI. Game directories and the output directory are shared
+infrastructure for every tool, so they sit above the tabs:
+
+  * Game Directories / Output — common to all pipelines (model, level, unpack).
+  * CDF Pipeline — model conversion: CDF/CHR/CGF file, animation/texture
+    modes, live CLI preview, run button.
+  * Map — level tooling (currently Level -> JSON export; the unpacked level
+    block that used to sit inline in the file pipeline). Future level
+    features (terrain, geometry, vegetation placement) belong here.
+
+Header, the shared inputs above the tabs, status strip and the log are
+common across tabs.
 
 === Run ===
   python cristical_gui.py   (no args — the GUI is interactive)
@@ -49,11 +57,19 @@ DETECT_LABEL = "detect_label"
 ANIM_MODE_COMBO = "anim_mode_combo"
 TEX_MODE_COMBO = "tex_mode_combo"
 GLB_CHECK = "glb_check"
+COLLISION_CHECK = "collision_check"
 RUN_BTN = "run_btn"
 CLI_LABEL = "cli_label"
 GD_GROUP = "gamedirs_group"
 GD_ADD_BTN = "gamedirs_add_btn"
 GAME_TITLE_COMBO = "game_title_combo"
+LEVEL_INPUT = "level_input"
+LEVEL_SKIP_VEG_CHECK = "level_skip_veg_check"
+LEVEL_VISUAL_CHECK = "level_visual_check"
+LEVEL_RUN_BTN = "level_run_btn"
+TAB_BAR = "tabs_main"
+TAB_CDF = "tab_cdf_pipeline"
+TAB_MAP = "tab_map"
 GAME_AUTO = "Auto-detect"
 GAME_TITLES = (GAME_AUTO,) + tuple(t.value for t in GameTitle)
 
@@ -188,6 +204,8 @@ def _build_cli_preview():
         parts.append("--no-tex")
     if dpg.get_value(GLB_CHECK):
         parts.append("--glb")
+    if dpg.get_value(COLLISION_CHECK):
+        parts.append("--extract-collision")
 
     line = "Run_CrisTical.bat " + " ".join(parts) if parts else "Run_CrisTical.bat  (fill CDF/CGF path)"
     dpg.set_value(CLI_LABEL, line)
@@ -663,6 +681,80 @@ def browse_output():
     _build_cli_preview()
 
 
+def browse_level():
+    try:
+        path, cancelled = _tk_pick_dir("Select unpacked level directory")
+    except Exception:
+        dpg.show_item("file_dialog_level")
+        return
+    if cancelled:
+        return
+    if os.path.isfile(os.path.join(path, "levelinfo.xml")):
+        dpg.set_value(LEVEL_INPUT, path)
+    else:
+        ct("GUI", "WARN: no levelinfo.xml in %s — not an unpacked level dir?" % path)
+
+
+def run_level_export():
+    """Run level2json.py (subprocess) on the level directory chosen above."""
+    level_dir = dpg.get_value(LEVEL_INPUT).strip().strip('"')
+    if not level_dir or not os.path.isdir(level_dir):
+        ct("GUI", "ERROR: level directory not set or not found")
+        return
+    out_dir = dpg.get_value(OUTPUT_INPUT).strip().strip('"') or str(OUTPUT_DEFAULT)
+    level_name = os.path.basename(os.path.normpath(level_dir))
+    out_json = os.path.join(out_dir, level_name + ".json")
+    game_dirs = list(_game_dirs) if _game_dirs else ([_auto_game_root] if _auto_game_root else [])
+
+    argv = [level_dir, out_json]
+    if game_dirs:
+        argv += ["--game-dir", game_dirs[0]]
+    if dpg.get_value(LEVEL_VISUAL_CHECK):
+        argv.append("--visual-only")
+    if dpg.get_value(LEVEL_SKIP_VEG_CHECK):
+        argv.append("--no-vegetation")
+
+    script = os.path.join(SCRIPT_DIR, "level2json.py")
+    python_exe = sys.executable
+    ct("GUI", "Level export: %s -> %s" % (level_dir, out_json))
+    ct("GUI", "CLI equivalent: %s level2json.py %s" % (
+        os.path.basename(python_exe), " ".join(argv)))
+
+    def _run():
+        global _running
+        _running = True
+        _q.put(("running", True))
+        set_status((240, 200, 60), "RUNNING")
+        try:
+            import subprocess
+            proc = subprocess.Popen(
+                [python_exe, script] + argv,
+                cwd=str(PROJ_ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            for line in proc.stdout:
+                ct("Level", line.rstrip("\r\n"))
+            rc = proc.wait()
+            if rc == 0:
+                ct("GUI", "Level export OK: %s" % out_json)
+                set_status((80, 210, 100), "DONE")
+            else:
+                ct("GUI", "ERROR: level2json.py exited with code %s" % rc)
+                set_status((230, 70, 70), "ERROR")
+        except Exception as e:
+            ct("GUI", "ERROR: %s" % str(e))
+            set_status((230, 70, 70), "ERROR")
+        finally:
+            _running = False
+            _q.put(("running", False))
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def _file_callback(sender, app_data):
     if sender == "file_dialog_cdf":
         sel = app_data.get("selections", {})
@@ -676,6 +768,10 @@ def _file_callback(sender, app_data):
         if path:
             dpg.set_value(OUTPUT_INPUT, path)
             _build_cli_preview()
+    elif sender == "file_dialog_level":
+        path = app_data.get("file_path_name", "")
+        if path and os.path.isdir(path):
+            dpg.set_value(LEVEL_INPUT, path)
 
 
 # ===================================================================
@@ -1039,6 +1135,7 @@ def run_conversion():
     split_anim = (anim_mode == "Split per animation")
     do_tex = tex_mode != "Skip textures"
     use_glb = dpg.get_value(GLB_CHECK)
+    extract_coll = dpg.get_value(COLLISION_CHECK)
 
     ct("GUI", "Output dir: %s" % out_dir)
     ct("GUI", "Output file: %s" % out_gltf)
@@ -1056,16 +1153,19 @@ def run_conversion():
             if is_cga:
                 run_cga_pipeline(cdf_path, game_dirs, out_gltf,
                                  do_anim=do_anim, do_tex=do_tex,
-                                 progress_cb=lambda msg: ct("Pipeline", msg))
+                                 progress_cb=lambda msg: ct("Pipeline", msg),
+                                 extract_collision=extract_coll)
             elif is_cgf:
                 run_cgf_pipeline(cdf_path, game_dirs, out_gltf,
                                  do_tex=do_tex, glb=use_glb,
-                                 progress_cb=lambda msg: ct("Pipeline", msg))
+                                 progress_cb=lambda msg: ct("Pipeline", msg),
+                                 extract_collision=extract_coll)
             else:
                 run_pipeline(cdf_path, game_dirs, out_gltf,
                              do_anim=do_anim, do_tex=do_tex, split_anim=split_anim,
                              glb=use_glb,
-                             progress_cb=lambda msg: ct("Pipeline", msg))
+                             progress_cb=lambda msg: ct("Pipeline", msg),
+                             extract_collision=extract_coll)
             set_status((80, 210, 100), "DONE")
         except Exception as e:
             ct("GUI", "ERROR: %s" % str(e))
@@ -1146,6 +1246,12 @@ def build_gui():
     ):
         dpg.add_file_extension("")
 
+    with dpg.file_dialog(
+        directory_selector=True, show=False, callback=_file_callback,
+        tag="file_dialog_level", width=600, height=400
+    ):
+        dpg.add_file_extension("")
+
     # --- main window ---
     with dpg.window(tag="main_window",
                      label="CrisTical - Crysis3D Converter",
@@ -1162,7 +1268,7 @@ def build_gui():
 
         dpg.add_spacer(height=4)
 
-        # --- status ---
+        # --- shared status strip (both pipelines report into it) ---
         with dpg.group(indent=4):
             with dpg.group(horizontal=True):
                 with dpg.drawlist(width=20, height=20):
@@ -1172,26 +1278,7 @@ def build_gui():
 
         dpg.add_spacer(height=6)
 
-        # --- CDF File ---
-        with dpg.group(indent=4):
-            dpg.add_text("CDF File", color=(255, 200, 100))
-            with dpg.group(horizontal=True):
-                dpg.add_input_text(default_value="", width=420, height=24, tag=CDF_INPUT,
-                                    hint="Path to .cdf or .chr file")
-                dpg.add_button(label="Browse", callback=browse_cdf, small=True, tag="btn_browse_cdf")
-                with dpg.tooltip("btn_browse_cdf"):
-                    dpg.add_text("Select a .cdf (Character Definition File) or .chr model file")
-                dpg.add_button(label="Scan", callback=scan_model, small=True, tag="btn_scan")
-                with dpg.tooltip("btn_scan"):
-                    dpg.add_text("Detect bones, primitives, materials, and animations in the file")
-
-            dpg.add_spacer(height=2)
-            dpg.add_text("", tag=SCAN_LABEL, color=(160, 165, 175))
-            dpg.add_text("", tag=DETECT_LABEL, color=(140, 145, 155))
-
-        dpg.add_spacer(height=6)
-
-        # --- Game Directories ---
+        # --- Game Directories (shared: CDF pipeline, Map, unpack, ...) ---
         with dpg.group(indent=4):
             with dpg.group(horizontal=True):
                 with dpg.drawlist(width=20, height=20):
@@ -1205,7 +1292,7 @@ def build_gui():
                 dpg.add_text("Add a Crysis game directory (folder with Animations.pak or Objects/)")
             dpg.add_text('e.g. F:\\Games\\Crysis_Remastered\\Game  (folder with Animations.pak)', color=(90, 95, 105))
 
-            with dpg.child_window(height=80, border=True, tag=GD_GROUP, parent="main_window"):
+            with dpg.child_window(height=80, border=True, tag=GD_GROUP):
                 pass
 
             with dpg.group(horizontal=True):
@@ -1221,7 +1308,7 @@ def build_gui():
 
         dpg.add_spacer(height=6)
 
-        # --- Output ---
+        # --- Output (shared) ---
         with dpg.group(indent=4):
             dpg.add_text("Output Directory", color=(255, 200, 100))
             with dpg.group(horizontal=True):
@@ -1231,42 +1318,96 @@ def build_gui():
                 with dpg.tooltip("btn_browse_out"):
                     dpg.add_text("Select where to save converted files (.gltf, .bin, textures, log)")
 
-        dpg.add_spacer(height=8)
+        dpg.add_spacer(height=6)
 
-        # --- Pipeline options ---
-        with dpg.group(indent=4):
-            dpg.add_text("Pipeline Options", color=(255, 200, 100))
-            with dpg.group(horizontal=True):
-                dpg.add_text("Animation mode:", color=(200, 200, 200))
-                dpg.add_combo(items=ANIM_MODES, default_value=ANIM_MODES[0],
-                                width=200, tag=ANIM_MODE_COMBO, callback=_on_option_changed)
-                dpg.add_spacer(width=12)
-                dpg.add_text("Texture mode:", color=(200, 200, 200))
-                dpg.add_combo(items=TEX_MODES, default_value=TEX_MODES[0],
-                                width=140, tag=TEX_MODE_COMBO, callback=_on_option_changed)
-                dpg.add_spacer(width=12)
-                dpg.add_checkbox(label="Output .glb", default_value=False,
-                                  tag=GLB_CHECK, callback=_on_option_changed)
+        # --- top-level tabs: model pipeline vs level/map tooling ---
+        with dpg.tab_bar(tag=TAB_BAR):
+            # ---------------- Tab 1: CDF Pipeline ----------------
+            with dpg.tab(label="CDF Pipeline", tag=TAB_CDF):
+                with dpg.group(indent=4):
+                    dpg.add_text("CDF File", color=(255, 200, 100))
+                    with dpg.group(horizontal=True):
+                        dpg.add_input_text(default_value="", width=420, height=24, tag=CDF_INPUT,
+                                            hint="Path to .cdf or .chr file")
+                        dpg.add_button(label="Browse", callback=browse_cdf, small=True, tag="btn_browse_cdf")
+                        with dpg.tooltip("btn_browse_cdf"):
+                            dpg.add_text("Select a .cdf (Character Definition File) or .chr model file")
+                        dpg.add_button(label="Scan", callback=scan_model, small=True, tag="btn_scan")
+                        with dpg.tooltip("btn_scan"):
+                            dpg.add_text("Detect bones, primitives, materials, and animations in the file")
 
-        dpg.add_spacer(height=4)
+                    dpg.add_spacer(height=2)
+                    dpg.add_text("", tag=SCAN_LABEL, color=(160, 165, 175))
+                    dpg.add_text("", tag=DETECT_LABEL, color=(140, 145, 155))
 
-        # --- CLI preview ---
-        with dpg.group(indent=4):
-            dpg.add_text("", tag=CLI_LABEL, color=(120, 125, 135))
+                dpg.add_spacer(height=6)
 
-        dpg.add_spacer(height=8)
+                # --- Pipeline options ---
+                with dpg.group(indent=4):
+                    dpg.add_text("Pipeline Options", color=(255, 200, 100))
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("Animation mode:", color=(200, 200, 200))
+                        dpg.add_combo(items=ANIM_MODES, default_value=ANIM_MODES[0],
+                                        width=200, tag=ANIM_MODE_COMBO, callback=_on_option_changed)
+                        dpg.add_spacer(width=12)
+                        dpg.add_text("Texture mode:", color=(200, 200, 200))
+                        dpg.add_combo(items=TEX_MODES, default_value=TEX_MODES[0],
+                                        width=140, tag=TEX_MODE_COMBO, callback=_on_option_changed)
+                        dpg.add_spacer(width=12)
+                        dpg.add_checkbox(label="Output .glb", default_value=False,
+                                          tag=GLB_CHECK, callback=_on_option_changed)
+                        dpg.add_checkbox(label="Extract collision mesh", default_value=False,
+                                          tag=COLLISION_CHECK, callback=_on_option_changed)
 
-        # --- Run button ---
-        with dpg.group(indent=4):
-            dpg.add_button(label=">> CONVERT <<", tag=RUN_BTN, callback=run_conversion,
-                           width=200, height=30)
-            with dpg.tooltip(RUN_BTN):
-                dpg.add_text("Start the conversion pipeline: skeleton + mesh + materials + textures + animations")
+                dpg.add_spacer(height=4)
+
+                # --- CLI preview ---
+                with dpg.group(indent=4):
+                    dpg.add_text("", tag=CLI_LABEL, color=(120, 125, 135))
+
+                dpg.add_spacer(height=8)
+
+                # --- Run button ---
+                with dpg.group(indent=4):
+                    dpg.add_button(label=">> CONVERT <<", tag=RUN_BTN, callback=run_conversion,
+                                   width=200, height=30)
+                    with dpg.tooltip(RUN_BTN):
+                        dpg.add_text("Start the conversion pipeline: skeleton + mesh + materials + textures + animations")
+
+            # ---------------- Tab 2: Map ----------------
+            with dpg.tab(label="Map", tag=TAB_MAP):
+                with dpg.group(indent=4):
+                    dpg.add_text("Level -> JSON (unpacked level directory)", color=(255, 200, 100))
+                    dpg.add_text("Level tooling is a separate concern from the model pipeline "
+                                 "and lives on its own tab.", color=(90, 95, 105))
+                    with dpg.group(horizontal=True):
+                        dpg.add_input_text(default_value="", width=420, height=24, tag=LEVEL_INPUT,
+                                            hint="Path to level_Unpacked (levelinfo.xml, terrain\\terrain.dat)")
+                        dpg.add_button(label="Browse", callback=browse_level, small=True, tag="btn_browse_level")
+                        with dpg.tooltip("btn_browse_level"):
+                            dpg.add_text("Select an unpacked level directory (level.pak extracted, e.g. via unpack tool)")
+                    with dpg.group(horizontal=True):
+                        dpg.add_checkbox(label="Visual-only entities", default_value=False, tag=LEVEL_VISUAL_CHECK)
+                        dpg.add_spacer(width=12)
+                        dpg.add_checkbox(label="Skip vegetation instances", default_value=False, tag=LEVEL_SKIP_VEG_CHECK)
+                        dpg.add_spacer(width=12)
+                        dpg.add_button(label="Export level JSON", callback=run_level_export,
+                                       small=True, tag=LEVEL_RUN_BTN)
+                        with dpg.tooltip(LEVEL_RUN_BTN):
+                            dpg.add_text("Run level2json.py: entities, lights, brushes, vegetation -> single JSON\n"
+                                         "Uses the first game directory for profile detection (Crysis Remastered enables terrain.dat)")
+
+                dpg.add_spacer(height=8)
+
+                # --- future Map functions go here ---
+                with dpg.group(indent=4):
+                    dpg.add_text("Further level features", color=(255, 200, 100))
+                    dpg.add_text("(terrain, geometry, vegetation placement export etc. — roadmap)", color=(100, 105, 115))
 
         dpg.add_separator()
         dpg.add_spacer(height=2)
 
-        # --- Log ---
+        # --- Log (shared across all tabs) ---
         with dpg.group(indent=4):
             dpg.add_checkbox(label="Auto-scroll", tag=CK, default_value=True)
             dpg.add_input_text(tag=LG, multiline=True, readonly=True, width=-1, height=-1,

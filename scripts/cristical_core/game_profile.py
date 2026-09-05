@@ -61,6 +61,106 @@ class GameTitle(Enum):
         }
         return fam[self]
 
+    @property
+    def texture_pipeline(self) -> dict:
+        """Per-title texture reading/writing policy (see _TEXTURE_PIPELINE).
+
+        Returns a dict with keys: normal_z, gloss_source, emissive_alpha,
+        mtl_to_real_ext, split_dds. Unknown titles get the safe default
+        (Z reconstruction, scalar shininess, no emissive alpha, split
+        DDS tolerated)."""
+        return dict(_TEXTURE_PIPELINE.get(self, _TEXTURE_PIPELINE_DEFAULT))
+
+
+# ----------------------------------------------------------------------
+# Texture pipeline profile per title (module-level so the table can
+# reference GameTitle members; exposed via GameTitle.texture_pipeline).
+# Every field reflects an ENGINE-observed behaviour (verified against
+# game data / engine sources), not a converter invention:
+#
+# normal_z
+#   "reconstruct" - shipped _ddn textures are BC5/ATI2 (two-channel
+#      RG; the Blue channel is empty, e.g. C2 grunt_metal_ddn.dds and
+#      C3 body_ddn.dds probe as mode=RGB with ch2 max==0). The engine
+#      samples only XY and reconstructs Z in-shader, so the converter
+#      rebuilds Z = sqrt(1-x^2-y^2) when writing a PNG.
+#   "present" - the texture keeps a real Blue channel (Crysis 1
+#      Remastered hunter_ddn.dds.0 decodes RGBA with ch2 mean 163 -
+#      Z is already authored; nothing to reconstruct).
+#
+# gloss_source
+#   Where the smoothness/gloss signal lives for this title:
+#   "spec_alpha"  - specular map alpha (engine slot EFTT_SPECULAR,
+#      GenMask %SPECULARPOW_GLOSSALPHA; C2 grunt plate_up etc.).
+#   "spec_blue"   - specular map Blue channel, selected by the
+#      material's PublicParams GlossMapChannelB="1" (C3 body_spec
+#      ch2 mean 183 vs ch0/1 ~56 - visibly a distinct gloss layer).
+#   "ddna_alpha"  - normal map alpha on _ddna textures (engine
+#      FT_HAS_ATTACHED_ALPHA mirroring the file into EFTT_SMOOTHNESS;
+#      C1 Remastered terrain detail set: beach_white_sand_ddna etc.).
+#   "shininess"   - material scalar only (no gloss texture at all);
+#      fallback for titles/slots without a map.
+#
+# emissive_alpha
+#   "glow"   - diffuse alpha feeds glow/emittance when the material
+#      has %ALPHAGLOW + GlowAmount (C1 family, C2 grunt eyes).
+#   "none"   - alpha never carries emissive data (C3 uses explicit
+#      _em / Emittance slot textures instead).
+#
+# mtl_to_real_ext
+#   Extension rewriting between the .mtl <Texture File=...> reference
+#   and the shipped asset: C1/C1R reference .dds/.tif matching the
+#   real file; C2/C3 materials reference .tif source art while the
+#   shipped data root only contains compiled .dds (engine resource
+#   compiler replaces extensions when resolving, per
+#   EF_LoadTexture/CTexture::ForName).
+#
+# split_dds
+#   True - textures ship as split DDS: a .dds.0 header stub plus
+#      .dds.N sidecars holding the mip payloads (C3, both
+#      Remastereds). The converter concatenates header + highest .N.
+#   False - one monolithic .dds file (C1, C2).
+# ----------------------------------------------------------------------
+
+_TEXTURE_PIPELINE = {
+        GameTitle.CRYSIS_1: {
+            "normal_z": "reconstruct", "gloss_source": "spec_alpha",
+            "emissive_alpha": "glow", "mtl_to_real_ext": None,
+            "split_dds": False,
+        },
+        GameTitle.CRYSIS_WARHEAD: {
+            "normal_z": "reconstruct", "gloss_source": "spec_alpha",
+            "emissive_alpha": "glow", "mtl_to_real_ext": None,
+            "split_dds": False,
+        },
+        GameTitle.CRYSIS_WARS: {
+            "normal_z": "reconstruct", "gloss_source": "spec_alpha",
+            "emissive_alpha": "glow", "mtl_to_real_ext": None,
+            "split_dds": False,
+        },
+        GameTitle.CRYSIS_REMASTERED: {
+            "normal_z": "present", "gloss_source": "ddna_alpha",
+            "emissive_alpha": "glow", "mtl_to_real_ext": None,
+            "split_dds": True,
+        },
+        GameTitle.CRYSIS_2: {
+            "normal_z": "reconstruct", "gloss_source": "spec_alpha",
+            "emissive_alpha": "glow", "mtl_to_real_ext": (".tif", ".dds"),
+            "split_dds": False,
+        },
+        GameTitle.CRYSIS_3: {
+            "normal_z": "reconstruct", "gloss_source": "spec_blue",
+            "emissive_alpha": "none", "mtl_to_real_ext": (".tif", ".dds"),
+            "split_dds": True,
+        },
+    }
+
+_TEXTURE_PIPELINE_DEFAULT = {
+    "normal_z": "reconstruct", "gloss_source": "shininess",
+    "emissive_alpha": "none", "mtl_to_real_ext": None,
+    "split_dds": True,
+}
+
 
 # Small markers used to disambiguate the plain-ZIP titles (C1/Warhead/Remastered/Wars).
 _ZIP_TITLE_MARKERS = {
@@ -71,6 +171,50 @@ _ZIP_TITLE_MARKERS = {
 
 _DATA_MARKER_NAMES = ("objects.pak", "animations.pak", "script.pak", "scripts.pak")
 _GEOM_ENTRY_HINT = ("objects.pak", "objects")
+
+# Crysis 2 Remastered paks are plain ZIPs whose payloads use the custom
+# LZ4 compression method (zip method 12) and carry a ``.lz4compression``
+# marker entry. No other edition does - that makes the marker/method a
+# reliable C2R discriminator inside the plain-ZIP family.
+_LZ4_CACHE = {}
+
+
+def _has_lz4_paks(root: str) -> bool:
+    """True when a data root's paks use the custom LZ4 zip method.
+
+    Opens one marker pak's central directory and looks for a method-12
+    entry (or the ``.lz4compression`` marker). Cheap: metadata only,
+    no payload decompression. Cached per root.
+    """
+    cached = _LZ4_CACHE.get(root)
+    if cached is not None:
+        return cached
+    found = False
+    try:
+        import zipfile
+        for n in sorted(os.listdir(root)):
+            if not n.lower().endswith(".pak"):
+                continue
+            p = os.path.join(root, n)
+            if not os.path.isfile(p):
+                continue
+            try:
+                with zipfile.ZipFile(p, "r") as z:
+                    if ".lz4compression" in z.namelist():
+                        found = True
+                        break
+                    for i in z.infolist():
+                        if i.compress_type == 12:
+                            found = True
+                            break
+            except Exception:
+                continue
+            if found:
+                break
+    except OSError:
+        pass
+    _LZ4_CACHE[root] = found
+    return found
 
 # Remastered ships ``_ddna`` normal-map textures (often split ``.dds.N``
 # sidecars); the original Crysis 1 / Warhead / Wars tree has only ``_ddn``.
@@ -256,6 +400,23 @@ def _classify_detected(path: str) -> dict:
         return {"title": GameTitle.CRYSIS_3, "root": root, "family": family,
                 "confidence": 0.95, "notes": ["Twofish-encrypted pak -> Crysis 3"]}
     if family == "zip":
+        # Crysis 2 Remastered paks are plain ZIPs using the custom LZ4
+        # zip method (12) with a ``.lz4compression`` marker entry - no
+        # other edition ships that, so it identifies C2R by content, not
+        # by install folder naming.
+        if _has_lz4_paks(root):
+            return {"title": GameTitle.CRYSIS_2, "root": root,
+                    "family": family, "confidence": 0.95,
+                    "notes": ["LZ4-compressed paks -> Crysis 2 Remastered"]}
+        # Crysis 3 Remastered also ships plain-ZIP paks (deflate only)
+        # under its base game's data-root name. A zip sniff already
+        # excludes encrypted C2/C3, so a plain zip in a C3 root is C3R.
+        base = os.path.basename(os.path.normpath(root)).lower()
+        if base in ("c3", "gamecrysis3"):
+            return {"title": GameTitle.CRYSIS_3, "root": root,
+                    "family": family, "confidence": 0.85,
+                    "notes": ["plain-ZIP paks in C3 root -> "
+                              "Crysis 3 Remastered"]}
         # Within the plain-ZIP family, Remastered is the only edition that
         # ships ``_ddna`` normal-map textures — use that to disambiguate.
         rem = _has_ddna_loose(root)
